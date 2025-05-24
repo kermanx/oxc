@@ -6,9 +6,12 @@ use proc_macro2::TokenStream;
 use crate::{log, log_result};
 
 mod javascript;
+mod moonbit;
 mod rust;
 mod yaml;
+
 use javascript::print_javascript;
+use moonbit::print_moonbit;
 use rust::{print_rust, rust_fmt};
 use yaml::print_yaml;
 
@@ -34,6 +37,7 @@ pub enum Output {
     Rust { path: String, tokens: TokenStream },
     RustString { path: String, code: String },
     Javascript { path: String, code: String },
+    MoonBit { path: String, code: String },
     Yaml { path: String, code: String },
     Raw { path: String, code: String },
 }
@@ -56,6 +60,10 @@ impl Output {
             }
             Self::Javascript { path, code } => {
                 let code = print_javascript(&code, &generator_path);
+                (path, code)
+            }
+            Self::MoonBit { path, code } => {
+                let code = print_moonbit(&code, &generator_path);
                 (path, code)
             }
             Self::Yaml { path, code } => {

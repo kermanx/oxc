@@ -14,6 +14,7 @@ mod scopes_collector;
 mod typescript;
 mod utf8_to_utf16;
 mod visit;
+mod moonbit;
 
 pub use assert_layouts::AssertLayouts;
 pub use ast_builder::AstBuilderGenerator;
@@ -23,6 +24,7 @@ pub use get_id::GetIdGenerator;
 pub use raw_transfer::RawTransferGenerator;
 pub use scopes_collector::ScopesCollectorGenerator;
 pub use typescript::TypescriptGenerator;
+pub use moonbit::MoonBitGenerator;
 pub use utf8_to_utf16::Utf8ToUtf16ConverterGenerator;
 pub use visit::VisitGenerator;
 

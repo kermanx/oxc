@@ -248,6 +248,9 @@ const TRAVERSE_CRATE_PATH: &str = "crates/oxc_traverse";
 /// Path to write TS type definitions to
 const TYPESCRIPT_DEFINITIONS_PATH: &str = "npm/oxc-types/types.d.ts";
 
+/// Path to write MoonBit type definitions to
+const MOONBIT_DEFINITIONS_PATH: &str = "../src/lib/ast.mbt";
+
 /// Path to NAPI parser package
 const NAPI_PARSER_PACKAGE_PATH: &str = "napi/parser";
 
@@ -277,6 +280,7 @@ const GENERATORS: &[&(dyn Generator + Sync)] = &[
     &generators::Utf8ToUtf16ConverterGenerator,
     &generators::RawTransferGenerator,
     &generators::TypescriptGenerator,
+    &generators::MoonBitGenerator,
     &generators::FormatterFormatGenerator,
 ];
 
