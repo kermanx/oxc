@@ -1,15 +1,13 @@
-use std::{path::Path, sync::Arc};
+use std::path::Path;
 
 use nonmax::NonMaxU32;
+
+use oxc_data_structures::slice_iter::SliceIter;
 use oxc_index::{Idx, IndexVec};
 use oxc_span::Span;
 use oxc_syntax::identifier::{LS, PS};
 
-// Irregular line breaks - '\u{2028}' (LS) and '\u{2029}' (PS)
-const LS_OR_PS_FIRST: u8 = 0xE2;
-const LS_OR_PS_SECOND: u8 = 0x80;
-const LS_THIRD: u8 = 0xA8;
-const PS_THIRD: u8 = 0xA9;
+use crate::str::{LS_LAST_2_BYTES, LS_OR_PS_FIRST_BYTE, PS_LAST_2_BYTES};
 
 /// Number of lines to check with linear search when translating byte position to line index
 const LINE_SEARCH_LINEAR_ITERATIONS: usize = 16;
@@ -65,9 +63,9 @@ pub struct ColumnOffsets {
 }
 
 #[expect(clippy::struct_field_names)]
-pub struct SourcemapBuilder {
+pub struct SourcemapBuilder<'a> {
     source_id: u32,
-    original_source: Arc<str>,
+    original_source: &'a str,
     last_generated_update: usize,
     last_position: Option<u32>,
     line_offset_tables: LineOffsetTables,
@@ -80,15 +78,15 @@ pub struct SourcemapBuilder {
     last_line_lookup: u32,
 }
 
-impl SourcemapBuilder {
-    pub fn new(path: &Path, source_text: &str) -> Self {
+impl<'a> SourcemapBuilder<'a> {
+    pub fn new(path: &Path, source_text: &'a str) -> Self {
         let mut sourcemap_builder = oxc_sourcemap::SourceMapBuilder::default();
         let line_offset_tables = Self::generate_line_offset_tables(source_text);
         let source_id =
             sourcemap_builder.set_source_and_content(path.to_string_lossy().as_ref(), source_text);
         Self {
             source_id,
-            original_source: Arc::from(source_text),
+            original_source: source_text,
             last_generated_update: 0,
             last_position: None,
             line_offset_tables,
@@ -114,18 +112,17 @@ impl SourcemapBuilder {
         let original_name = self.original_source.get(span.start as usize..span.end as usize);
         // The token name should be original name.
         // If it hasn't change, name should be `None` to reduce `SourceMap` size.
-        let token_name =
-            if original_name == Some(name) { None } else { original_name.map(Into::into) };
+        let token_name = if original_name == Some(name) { None } else { original_name };
         self.add_source_mapping(output, span.start, token_name);
     }
 
-    pub fn add_source_mapping(&mut self, output: &[u8], position: u32, name: Option<Arc<str>>) {
-        if matches!(self.last_position, Some(last_position) if last_position == position) {
+    pub fn add_source_mapping(&mut self, output: &[u8], position: u32, name: Option<&str>) {
+        if self.last_position == Some(position) {
             return;
         }
         let (original_line, original_column) = self.search_original_line_and_column(position);
         self.update_generated_line_and_column(output);
-        let name_id = name.map(|s| self.sourcemap_builder.add_name(&s));
+        let name_id = name.map(|s| self.sourcemap_builder.add_name(s));
         self.sourcemap_builder.add_token(
             self.generated_line,
             self.generated_column,
@@ -261,19 +258,17 @@ impl SourcemapBuilder {
                 b'\n' => {}
                 b'\r' => {
                     // Handle Windows-specific "\r\n" newlines
-                    if iter.clone().next() == Some(&b'\n') {
+                    if iter.peek() == Some(&b'\n') {
                         iter.next();
                     }
                 }
                 _ if b.is_ascii() => {
                     continue;
                 }
-                LS_OR_PS_FIRST => {
+                LS_OR_PS_FIRST_BYTE => {
                     let next_byte = *iter.next().unwrap();
                     let next_next_byte = *iter.next().unwrap();
-                    if next_byte != LS_OR_PS_SECOND
-                        || !matches!(next_next_byte, LS_THIRD | PS_THIRD)
-                    {
+                    if !matches!([next_byte, next_next_byte], LS_LAST_2_BYTES | PS_LAST_2_BYTES) {
                         last_line_is_ascii = false;
                         continue;
                     }
@@ -287,7 +282,7 @@ impl SourcemapBuilder {
 
             // Line break found.
             // `iter` is now positioned after line break.
-            line_start_ptr = iter.as_slice().as_ptr();
+            line_start_ptr = iter.ptr();
             self.generated_line += 1;
             self.generated_column = 0;
             last_line_is_ascii = true;
@@ -295,8 +290,8 @@ impl SourcemapBuilder {
 
         // Calculate column
         self.generated_column += if last_line_is_ascii {
-            // `iter` is now exhausted, so `iter.as_slice().as_ptr()` is pointer to end of `output`
-            (iter.as_slice().as_ptr() as usize - line_start_ptr as usize) as u32
+            // `iter` is now exhausted, so `iter.ptr()` is pointer to end of `output`
+            (iter.ptr() as usize - line_start_ptr as usize) as u32
         } else {
             let line_byte_offset = line_start_ptr as usize - remaining.as_ptr() as usize;
             // TODO: It'd be better if could use `from_utf8_unchecked` here, but we'd need to make this
@@ -311,6 +306,9 @@ impl SourcemapBuilder {
     fn generate_line_offset_tables(content: &str) -> LineOffsetTables {
         let mut lines = vec![];
         let mut column_offsets = IndexVec::new();
+
+        // Used as a buffer to reduce memory reallocations
+        let mut columns = vec![];
 
         // Process content line-by-line.
         // For each line, start by assuming line will be entirely ASCII, and read byte-by-byte.
@@ -350,8 +348,6 @@ impl SourcemapBuilder {
                         line.column_offsets_id =
                             Some(ColumnOffsetsId::from_usize(column_offsets.len()));
 
-                        let mut columns = vec![];
-
                         // Loop through rest of line char-by-char.
                         // `chunk_byte_offset` in this loop is byte offset from start of this 1st
                         // Unicode char.
@@ -361,9 +357,7 @@ impl SourcemapBuilder {
                         for (chunk_byte_offset, ch) in remaining.char_indices() {
                             #[expect(clippy::cast_possible_truncation)]
                             let mut chunk_byte_offset = chunk_byte_offset as u32;
-                            for _ in 0..ch.len_utf8() {
-                                columns.push(column);
-                            }
+                            columns.extend(std::iter::repeat_n(column, ch.len_utf8()));
 
                             match ch {
                                 '\r' => {
@@ -397,8 +391,9 @@ impl SourcemapBuilder {
                             // Record column offsets
                             column_offsets.push(ColumnOffsets {
                                 byte_offset_to_first: byte_offset_from_line_start,
-                                columns: columns.into_boxed_slice(),
+                                columns: columns.clone().into_boxed_slice(),
                             });
+                            columns.clear();
 
                             // Revert back to outer loop for next line
                             continue 'lines;
@@ -550,7 +545,7 @@ mod test {
         // The name `b` -> `c`, save `b` to token.
         assert_eq!(
             sm.get_source_view_token(1_u32).as_ref().and_then(|token| token.get_name()),
-            Some("b")
+            Some(&"b".into())
         );
     }
 

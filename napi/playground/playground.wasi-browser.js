@@ -5,13 +5,15 @@ import {
   WASI as __WASI,
 } from '@napi-rs/wasm-runtime'
 
-import __wasmUrl from './playground.wasm32-wasi.wasm?url'
+
 
 const __wasi = new __WASI({
   version: 'preview1',
 })
 
+const __wasmUrl = new URL('./playground.wasm32-wasi.wasm', import.meta.url).href
 const __emnapiContext = __emnapiGetDefaultContext()
+
 
 const __sharedMemory = new WebAssembly.Memory({
   initial: 4000,
@@ -54,6 +56,7 @@ const {
   },
 })
 export default __napiModule.exports
+export const Severity = __napiModule.exports.Severity
 
 import { jsonParseAst } from "../parser/wrap.mjs"
 
@@ -73,4 +76,3 @@ export function Oxc() {
   })
 }
 
-export const Severity = __napiModule.exports.Severity

@@ -2,7 +2,84 @@
 
 All notable changes to this package will be documented in this file.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0).
+
+
+
+
+
+
+
+
+
+## [0.82.0] - 2025-08-12
+
+### 🚜 Refactor
+
+- bf9ae3b ast/estree: Remove custom serializer for `TSImportTypeQualifier` (#12961) (overlookmotel)
+
+
+## [0.81.0] - 2025-08-06
+
+### 💥 BREAKING CHANGES
+
+- 50b91ac ast: [**BREAKING**] Remove `IdentifierReference` from `qualifier` field of `TSImportType` (#12799) (camc314)
+
+### 🐛 Bug Fixes
+
+- 47e2c59 estree: Fix serialization of `TSImportTypeQualifier` (#12801) (camc314)
+
+
+
+
+
+
+
+
+## [0.77.1] - 2025-07-16
+
+### 🚀 Features
+
+- 9b14fbc ast: Add `ThisExpression` to `TSTypeName` (#12156) (Boshen)
+
+
+
+
+## [0.75.1] - 2025-07-03
+
+### 🐛 Bug Fixes
+
+- d7076b3 ast/estree: Add optional `range` field to `Span` in TS type defs (#12014) (overlookmotel)
+
+
+
+
+
+
+
+# Changelog
+
+All notable changes to this package will be documented in this file.
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project does not adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) until v1.0.0.
+
+## [0.72.3] - 2025-06-06
+
+### Bug Fixes
+
+- 8451bee ast/estree: Remove repeat fields from `BindingPattern` in TS-ESTree AST (#11500) (overlookmotel)
+- 8842604 estree: Update `add_ts_def` types in oxc-types (#11434) (Yuji Sugiura)
+
+## [0.72.2] - 2025-05-31
+
+### Features
+
+- 1df6732 ast/estree: Add decorators to ESTree AST (#11393) (overlookmotel)
+
+### Refactor
+
+- 12690a1 ast/estree: Re-order fields in visitation order (#11362) (overlookmotel)
+- 75ee3a5 ast/estree: Do not put TS struct fields last (#11360) (overlookmotel)
 
 ## [0.72.0] - 2025-05-24
 

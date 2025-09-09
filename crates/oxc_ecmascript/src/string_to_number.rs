@@ -1,3 +1,5 @@
+use oxc_syntax::identifier::{is_line_terminator, is_white_space};
+
 pub trait StringToNumber {
     fn string_to_number(&self) -> f64;
 }
@@ -7,7 +9,7 @@ pub trait StringToNumber {
 /// <https://tc39.es/ecma262/#sec-stringtonumber>
 impl StringToNumber for &str {
     fn string_to_number(&self) -> f64 {
-        let s = *self;
+        let s = self.trim_start_matches(is_str_white_space_char);
         match s {
             "" => return 0.0,
             "-Infinity" => return f64::NEG_INFINITY,
@@ -32,10 +34,13 @@ impl StringToNumber for &str {
         let mut bytes = s.bytes();
 
         if s.len() > 2 && bytes.next() == Some(b'0') {
-            let radix: u32 = match bytes.next() {
-                Some(b'x' | b'X') => 16,
-                Some(b'o' | b'O') => 8,
-                Some(b'b' | b'B') => 2,
+            // `| 32` converts upper case ASCII letters to lower case.
+            // A bit more efficient than testing for `b'x' | b'X'`.
+            // https://godbolt.org/z/Korrhd4TE
+            let radix: u32 = match bytes.next().unwrap() | 32 {
+                b'x' => 16,
+                b'o' => 8,
+                b'b' => 2,
                 _ => 0,
             };
 
@@ -62,4 +67,10 @@ impl StringToNumber for &str {
 
         s.parse::<f64>().unwrap_or(f64::NAN)
     }
+}
+
+/// whether the char is a StrWhiteSpaceChar
+/// <https://tc39.es/ecma262/#sec-tonumber-applied-to-the-string-type>
+fn is_str_white_space_char(c: char) -> bool {
+    is_white_space(c) || is_line_terminator(c)
 }

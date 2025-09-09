@@ -33,6 +33,8 @@ pub struct StructDef {
     pub containers: Containers,
     #[expect(unused)]
     pub visibility: Visibility,
+    /// For `#[derive(...)]` attributes.
+    pub derives: Vec<String>,
     pub generated_derives: Derives,
     pub fields: Vec<FieldDef>,
     pub builder: AstBuilderType,
@@ -56,6 +58,7 @@ impl StructDef {
         is_foreign: bool,
         file_id: FileId,
         visibility: Visibility,
+        derives: Vec<String>,
         generated_derives: Derives,
         fields: Vec<FieldDef>,
     ) -> Self {
@@ -68,6 +71,7 @@ impl StructDef {
             file_id,
             containers: Containers::default(),
             visibility,
+            derives,
             generated_derives,
             fields,
             builder: AstBuilderType::default(),
@@ -100,6 +104,14 @@ impl StructDef {
     /// Get iterator over field indexes.
     pub fn field_indices(&self) -> Range<usize> {
         0..self.fields.len()
+    }
+
+    /// Get reference to [`FieldDef`] for field called `name`.
+    ///
+    /// # Panics
+    /// Panics if struct does not have a field called `name`.
+    pub fn field_by_name(&self, name: &str) -> &FieldDef {
+        self.fields.iter().find(|field| field.name() == name).unwrap()
     }
 }
 

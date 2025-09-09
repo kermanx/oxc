@@ -3,10 +3,14 @@ use oxc_ast::{NONE, ast::*};
 use oxc_semantic::{Reference, SymbolFlags};
 use oxc_span::SPAN;
 use oxc_syntax::reference::ReferenceFlags;
-use oxc_traverse::{Traverse, TraverseCtx};
+use oxc_traverse::Traverse;
 
 use super::diagnostics;
-use crate::TransformCtx;
+
+use crate::{
+    context::{TransformCtx, TraverseCtx},
+    state::TransformState,
+};
 
 pub struct TypeScriptModule<'a, 'ctx> {
     /// <https://babeljs.io/docs/babel-plugin-transform-typescript#onlyremovetypeimports>
@@ -20,7 +24,7 @@ impl<'a, 'ctx> TypeScriptModule<'a, 'ctx> {
     }
 }
 
-impl<'a> Traverse<'a> for TypeScriptModule<'a, '_> {
+impl<'a> Traverse<'a, TransformState<'a>> for TypeScriptModule<'a, '_> {
     fn exit_program(&mut self, program: &mut Program<'a>, ctx: &mut TraverseCtx<'a>) {
         // In Babel, it will insert `use strict` in `@babel/transform-modules-commonjs` plugin.
         // Once we have a commonjs plugin, we can consider moving this logic there.
@@ -102,15 +106,18 @@ impl<'a> TypeScriptModule<'a, '_> {
             // No value reference, we will remove this declaration in `TypeScriptAnnotations`
             match &mut decl.module_reference {
                 module_reference @ match_ts_type_name!(TSModuleReference) => {
-                    let ident = module_reference.to_ts_type_name().get_identifier_reference();
-                    let reference = ctx.scoping_mut().get_reference_mut(ident.reference_id());
-                    // The binding of TSImportEqualsDeclaration has treated as a type reference,
-                    // so an identifier reference that it referenced also should be treated as a type reference.
-                    // `import TypeBinding = X.Y.Z`
-                    //                       ^ `X` should be treated as a type reference.
-                    let flags = reference.flags_mut();
-                    debug_assert_eq!(*flags, ReferenceFlags::Read);
-                    *flags = ReferenceFlags::Type;
+                    if let Some(ident) =
+                        module_reference.to_ts_type_name().get_identifier_reference()
+                    {
+                        let reference = ctx.scoping_mut().get_reference_mut(ident.reference_id());
+                        // The binding of TSImportEqualsDeclaration has treated as a type reference,
+                        // so an identifier reference that it referenced also should be treated as a type reference.
+                        // `import TypeBinding = X.Y.Z`
+                        //                       ^ `X` should be treated as a type reference.
+                        let flags = reference.flags_mut();
+                        debug_assert_eq!(*flags, ReferenceFlags::Read);
+                        *flags = ReferenceFlags::Type;
+                    }
                 }
                 TSModuleReference::ExternalModuleReference(_) => {}
             }
@@ -187,6 +194,7 @@ impl<'a> TypeScriptModule<'a, '_> {
                     false,
                 )
                 .into(),
+            TSTypeName::ThisExpression(e) => ctx.ast.expression_this(e.span),
         }
     }
 }

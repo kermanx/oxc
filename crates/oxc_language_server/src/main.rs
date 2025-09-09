@@ -1,10 +1,10 @@
+use std::{str::FromStr, sync::Arc};
+
 use futures::future::join_all;
 use log::{debug, info, warn};
-use options::{Options, Run, WorkspaceOption};
 use rustc_hash::FxBuildHasher;
 use serde_json::json;
-use std::str::FromStr;
-use tokio::sync::{Mutex, OnceCell, SetError};
+use tokio::sync::{OnceCell, RwLock, SetError};
 use tower_lsp_server::{
     Client, LanguageServer, LspService, Server,
     jsonrpc::{Error, ErrorCode, Result},
@@ -17,11 +17,6 @@ use tower_lsp_server::{
         ServerInfo, Unregistration, Uri, WorkspaceEdit,
     },
 };
-// #
-use capabilities::Capabilities;
-use code_actions::CODE_ACTION_KIND_SOURCE_FIX_ALL_OXC;
-use commands::{FIX_ALL_COMMAND_ID, FixAllCommandArgs};
-use worker::WorkspaceWorker;
 
 mod capabilities;
 mod code_actions;
@@ -31,6 +26,13 @@ mod options;
 #[cfg(test)]
 mod tester;
 mod worker;
+
+use capabilities::Capabilities;
+use code_actions::CODE_ACTION_KIND_SOURCE_FIX_ALL_OXC;
+use commands::{FIX_ALL_COMMAND_ID, FixAllCommandArgs};
+use linter::server_linter::ServerLinterRun;
+use options::{Options, WorkspaceOption};
+use worker::WorkspaceWorker;
 
 type ConcurrentHashMap<K, V> = papaya::HashMap<K, V, FxBuildHasher>;
 
@@ -42,7 +44,10 @@ struct Backend {
     // We must respect each program inside with its own root folder
     // and can not use shared programmes across multiple workspaces.
     // Each Workspace can have its own server configuration and program root configuration.
-    workspace_workers: Mutex<Vec<WorkspaceWorker>>,
+    // WorkspaceWorkers are only written on 2 occasions:
+    // 1. `initialize` request with workspace folders
+    // 2. `workspace/didChangeWorkspaceFolders` request
+    workspace_workers: Arc<RwLock<Vec<WorkspaceWorker>>>,
     capabilities: OnceCell<Capabilities>,
 }
 
@@ -115,7 +120,7 @@ impl LanguageServer for Backend {
             }
         }
 
-        *self.workspace_workers.lock().await = workers;
+        *self.workspace_workers.write().await = workers;
 
         self.capabilities.set(capabilities.clone()).map_err(|err| {
             let message = match err {
@@ -144,7 +149,7 @@ impl LanguageServer for Backend {
             return;
         };
 
-        let workers = &*self.workspace_workers.lock().await;
+        let workers = &*self.workspace_workers.read().await;
         let needed_configurations =
             ConcurrentHashMap::with_capacity_and_hasher(workers.len(), FxBuildHasher);
         let needed_configurations = needed_configurations.pin_owned();
@@ -200,7 +205,7 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
-        let workers = self.workspace_workers.lock().await;
+        let workers = self.workspace_workers.read().await;
         let new_diagnostics: papaya::HashMap<String, Vec<Diagnostic>, FxBuildHasher> =
             ConcurrentHashMap::default();
         let mut removing_registrations = vec![];
@@ -226,43 +231,9 @@ impl LanguageServer for Backend {
             });
 
         // the client passed valid options.
-        if let Some(options) = options {
-            for option in options {
-                let Some(worker) = workers
-                    .iter()
-                    .find(|worker| worker.is_responsible_for_uri(&option.workspace_uri))
-                else {
-                    continue;
-                };
-
-                let (diagnostics, watcher) = worker.did_change_configuration(&option.options).await;
-
-                if let Some(diagnostics) = diagnostics {
-                    for (uri, reports) in &diagnostics.pin() {
-                        new_diagnostics.pin().insert(
-                            uri.clone(),
-                            reports.iter().map(|d| d.diagnostic.clone()).collect(),
-                        );
-                    }
-                }
-
-                if let Some(watcher) = watcher {
-                    // remove the old watcher
-                    removing_registrations.push(Unregistration {
-                        id: format!("watcher-{}", worker.get_root_uri().as_str()),
-                        method: "workspace/didChangeWatchedFiles".to_string(),
-                    });
-                    // add the new watcher
-                    adding_registrations.push(Registration {
-                        id: format!("watcher-{}", worker.get_root_uri().as_str()),
-                        method: "workspace/didChangeWatchedFiles".to_string(),
-                        register_options: Some(json!(DidChangeWatchedFilesRegistrationOptions {
-                            watchers: vec![watcher]
-                        })),
-                    });
-                }
-            }
-        // else check if the client support workspace configuration requests
+        let resolved_options = if let Some(options) = options {
+            options
+            // else check if the client support workspace configuration requests
         } else if self
             .capabilities
             .get()
@@ -274,45 +245,58 @@ impl LanguageServer for Backend {
                 )
                 .await;
 
-            // we expect that the client is sending all the configuration items in order and completed
-            // this is a LSP specification and errors should be reported on the client side
-            for (index, worker) in workers.iter().enumerate() {
-                let Some(config) = &configs[index] else {
-                    continue;
-                };
-
-                let (diagnostics, watcher) = worker.did_change_configuration(config).await;
-
-                if let Some(diagnostics) = diagnostics {
-                    for (uri, reports) in &diagnostics.pin() {
-                        new_diagnostics.pin().insert(
-                            uri.clone(),
-                            reports.iter().map(|d| d.diagnostic.clone()).collect(),
-                        );
-                    }
-                }
-
-                if let Some(watcher) = watcher {
-                    // remove the old watcher
-                    removing_registrations.push(Unregistration {
-                        id: format!("watcher-{}", worker.get_root_uri().as_str()),
-                        method: "workspace/didChangeWatchedFiles".to_string(),
-                    });
-                    // add the new watcher
-                    adding_registrations.push(Registration {
-                        id: format!("watcher-{}", worker.get_root_uri().as_str()),
-                        method: "workspace/didChangeWatchedFiles".to_string(),
-                        register_options: Some(json!(DidChangeWatchedFilesRegistrationOptions {
-                            watchers: vec![watcher]
-                        })),
-                    });
-                }
-            }
+            // Only create WorkspaceOption when the config is Some
+            configs
+                .iter()
+                .enumerate()
+                // filter out results where the client did not return a configuration
+                .filter_map(|(index, config)| {
+                    config.as_ref().map(|options| WorkspaceOption {
+                        workspace_uri: workers[index].get_root_uri().clone(),
+                        options: options.clone(),
+                    })
+                })
+                .collect::<Vec<_>>()
         } else {
             warn!(
                 "could not update the configuration for a worker. Send a custom configuration with `workspace/didChangeConfiguration` or support `workspace/configuration`."
             );
             return;
+        };
+
+        for option in resolved_options {
+            let Some(worker) =
+                workers.iter().find(|worker| worker.is_responsible_for_uri(&option.workspace_uri))
+            else {
+                continue;
+            };
+
+            let (diagnostics, watcher) = worker.did_change_configuration(&option.options).await;
+
+            if let Some(diagnostics) = diagnostics {
+                for (uri, reports) in &diagnostics.pin() {
+                    new_diagnostics.pin().insert(
+                        uri.clone(),
+                        reports.iter().map(|d| d.diagnostic.clone()).collect(),
+                    );
+                }
+            }
+
+            if let Some(watcher) = watcher {
+                // remove the old watcher
+                removing_registrations.push(Unregistration {
+                    id: format!("watcher-{}", worker.get_root_uri().as_str()),
+                    method: "workspace/didChangeWatchedFiles".to_string(),
+                });
+                // add the new watcher
+                adding_registrations.push(Registration {
+                    id: format!("watcher-{}", worker.get_root_uri().as_str()),
+                    method: "workspace/didChangeWatchedFiles".to_string(),
+                    register_options: Some(json!(DidChangeWatchedFilesRegistrationOptions {
+                        watchers: vec![watcher]
+                    })),
+                });
+            }
         }
 
         if !new_diagnostics.is_empty() {
@@ -340,7 +324,7 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
-        let workers = self.workspace_workers.lock().await;
+        let workers = self.workspace_workers.read().await;
         // ToDo: what if an empty changes flag is passed?
         debug!("watched file did change");
         let all_diagnostics: papaya::HashMap<String, Vec<Diagnostic>, FxBuildHasher> =
@@ -379,7 +363,7 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
-        let mut workers = self.workspace_workers.lock().await;
+        let mut workers = self.workspace_workers.write().await;
         let mut cleared_diagnostics = vec![];
         let mut added_registrations = vec![];
         let mut removed_registrations = vec![];
@@ -392,7 +376,7 @@ impl LanguageServer for Backend {
             else {
                 continue;
             };
-            cleared_diagnostics.extend(worker.get_clear_diagnostics());
+            cleared_diagnostics.extend(worker.get_clear_diagnostics().await);
             removed_registrations.push(Unregistration {
                 id: format!("watcher-{}", worker.get_root_uri().as_str()),
                 method: "workspace/didChangeWatchedFiles".to_string(),
@@ -454,14 +438,11 @@ impl LanguageServer for Backend {
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         debug!("oxc server did save");
         let uri = &params.text_document.uri;
-        let workers = self.workspace_workers.lock().await;
+        let workers = self.workspace_workers.read().await;
         let Some(worker) = workers.iter().find(|worker| worker.is_responsible_for_uri(uri)) else {
             return;
         };
-        if !worker.should_lint_on_run_type(Run::OnSave).await {
-            return;
-        }
-        if let Some(diagnostics) = worker.lint_file(uri, None).await {
+        if let Some(diagnostics) = worker.lint_file(uri, None, ServerLinterRun::OnSave).await {
             self.client
                 .publish_diagnostics(
                     uri.clone(),
@@ -476,15 +457,12 @@ impl LanguageServer for Backend {
     /// get the file context from the language client
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = &params.text_document.uri;
-        let workers = self.workspace_workers.lock().await;
+        let workers = self.workspace_workers.read().await;
         let Some(worker) = workers.iter().find(|worker| worker.is_responsible_for_uri(uri)) else {
             return;
         };
-        if !worker.should_lint_on_run_type(Run::OnType).await {
-            return;
-        }
         let content = params.content_changes.first().map(|c| c.text.clone());
-        if let Some(diagnostics) = worker.lint_file(uri, content).await {
+        if let Some(diagnostics) = worker.lint_file(uri, content, ServerLinterRun::OnType).await {
             self.client
                 .publish_diagnostics(
                     uri.clone(),
@@ -497,13 +475,15 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = &params.text_document.uri;
-        let workers = self.workspace_workers.lock().await;
+        let workers = self.workspace_workers.read().await;
         let Some(worker) = workers.iter().find(|worker| worker.is_responsible_for_uri(uri)) else {
             return;
         };
 
         let content = params.text_document.text;
-        if let Some(diagnostics) = worker.lint_file(uri, Some(content)).await {
+        if let Some(diagnostics) =
+            worker.lint_file(uri, Some(content), ServerLinterRun::Always).await
+        {
             self.client
                 .publish_diagnostics(
                     uri.clone(),
@@ -516,16 +496,16 @@ impl LanguageServer for Backend {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = &params.text_document.uri;
-        let workers = self.workspace_workers.lock().await;
+        let workers = self.workspace_workers.read().await;
         let Some(worker) = workers.iter().find(|worker| worker.is_responsible_for_uri(uri)) else {
             return;
         };
-        worker.remove_diagnostics(&params.text_document.uri);
+        worker.remove_diagnostics(&params.text_document.uri).await;
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
-        let workers = self.workspace_workers.lock().await;
+        let workers = self.workspace_workers.read().await;
         let Some(worker) = workers.iter().find(|worker| worker.is_responsible_for_uri(uri)) else {
             return Ok(None);
         };
@@ -558,7 +538,7 @@ impl LanguageServer for Backend {
                 FixAllCommandArgs::try_from(params.arguments).map_err(Error::invalid_params)?;
 
             let uri = &Uri::from_str(&args.uri).unwrap();
-            let workers = self.workspace_workers.lock().await;
+            let workers = self.workspace_workers.read().await;
             let Some(worker) = workers.iter().find(|worker| worker.is_responsible_for_uri(uri))
             else {
                 return Ok(None);
@@ -618,8 +598,9 @@ impl Backend {
     // clears all diagnostics for workspace folders
     async fn clear_all_diagnostics(&self) {
         let mut cleared_diagnostics = vec![];
-        for worker in self.workspace_workers.lock().await.iter() {
-            cleared_diagnostics.extend(worker.get_clear_diagnostics());
+        let workers = &*self.workspace_workers.read().await;
+        for worker in workers {
+            cleared_diagnostics.extend(worker.get_clear_diagnostics().await);
         }
         self.publish_all_diagnostics(&cleared_diagnostics).await;
     }
@@ -641,7 +622,7 @@ async fn main() {
 
     let (service, socket) = LspService::build(|client| Backend {
         client,
-        workspace_workers: Mutex::new(vec![]),
+        workspace_workers: Arc::new(RwLock::new(vec![])),
         capabilities: OnceCell::new(),
     })
     .finish();

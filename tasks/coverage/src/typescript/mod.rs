@@ -1,3 +1,4 @@
+mod constants;
 mod meta;
 mod transpile_runner;
 
@@ -32,28 +33,8 @@ impl<T: Case> Suite<T> for TypeScriptSuite<T> {
         #[cfg(not(any(coverage, coverage_nightly)))]
         let supported_paths =
             ["conformance", "compiler"].iter().any(|p| path.to_string_lossy().contains(p));
-        let unsupported_tests = [
-            // these 2 relies on the ts "target" option
-            "functionWithUseStrictAndSimpleParameterList.ts",
-            "parameterInitializerBeforeDestructuringEmit.ts",
-            // these also relies on "target: es5" option w/ RegExp `u` flag
-            "unicodeExtendedEscapesInRegularExpressions01.ts",
-            "unicodeExtendedEscapesInRegularExpressions02.ts",
-            "unicodeExtendedEscapesInRegularExpressions03.ts",
-            "unicodeExtendedEscapesInRegularExpressions04.ts",
-            "unicodeExtendedEscapesInRegularExpressions05.ts",
-            "unicodeExtendedEscapesInRegularExpressions06.ts",
-            "unicodeExtendedEscapesInRegularExpressions08.ts",
-            "unicodeExtendedEscapesInRegularExpressions09.ts",
-            "unicodeExtendedEscapesInRegularExpressions10.ts",
-            "unicodeExtendedEscapesInRegularExpressions11.ts",
-            "unicodeExtendedEscapesInRegularExpressions13.ts",
-            "unicodeExtendedEscapesInRegularExpressions15.ts",
-            "unicodeExtendedEscapesInRegularExpressions16.ts",
-            "unicodeExtendedEscapesInRegularExpressions18.ts",
-        ]
-        .iter()
-        .any(|p| path.to_string_lossy().contains(p));
+        let unsupported_tests =
+            constants::NOT_SUPPORTED_TEST_PATHS.iter().any(|p| path.to_string_lossy().contains(p));
         !supported_paths || unsupported_tests
     }
 
@@ -75,15 +56,24 @@ pub struct TypeScriptCase {
     pub code: String,
     pub units: Vec<TestUnitData>,
     pub settings: CompilerSettings,
-    error_files: Vec<String>,
+    error_codes: Vec<String>,
     pub result: TestResult,
+}
+
+impl TypeScriptCase {
+    /// Simple check for usage such as `semantic`.
+    /// `should_fail()` will return `true` only if there are still error codes remaining
+    /// after filtering out the not-supported ones.
+    pub fn should_fail_with_any_error_codes(&self) -> bool {
+        !self.error_codes.is_empty()
+    }
 }
 
 impl Case for TypeScriptCase {
     fn new(path: PathBuf, code: String) -> Self {
-        let TestCaseContent { tests, settings, error_files } =
+        let TestCaseContent { tests, settings, error_codes } =
             TestCaseContent::make_units_from_test(&path, &code);
-        Self { path, code, units: tests, settings, error_files, result: TestResult::ToBeRun }
+        Self { path, code, units: tests, settings, error_codes, result: TestResult::ToBeRun }
     }
 
     fn code(&self) -> &str {
@@ -99,7 +89,10 @@ impl Case for TypeScriptCase {
     }
 
     fn should_fail(&self) -> bool {
-        !self.error_files.is_empty()
+        // If there are still error codes to be supported, it should fail
+        self.error_codes
+            .iter()
+            .any(|code| !constants::NOT_SUPPORTED_ERROR_CODES.contains(code.as_str()))
     }
 
     fn always_strict(&self) -> bool {
@@ -107,14 +100,12 @@ impl Case for TypeScriptCase {
     }
 
     fn run(&mut self) {
-        let units = self.units.clone();
-        for unit in units {
-            self.code.clone_from(&unit.content);
-            self.result = self.execute(unit.source_type);
-            if self.result != TestResult::Passed {
-                return;
-            }
-        }
-        self.result = TestResult::Passed;
+        let result = self
+            .units
+            .iter()
+            .map(|unit| self.parse(&unit.content, unit.source_type))
+            .find(Result::is_err)
+            .unwrap_or(Ok(()));
+        self.result = self.evaluate_result(result);
     }
 }

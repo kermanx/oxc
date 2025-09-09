@@ -13,7 +13,7 @@ use crate::{
 fn no_redeclare_diagnostic(name: &str, decl_span: Span, re_decl_span: Span) -> OxcDiagnostic {
     OxcDiagnostic::warn(format!("'{name}' is already defined.")).with_labels([
         decl_span.label(format!("'{name}' is already defined.")),
-        re_decl_span.label("It can not be redeclare here."),
+        re_decl_span.label("It can not be redeclared here."),
     ])
 }
 
@@ -22,9 +22,15 @@ fn no_redeclare_as_builtin_in_diagnostic(name: &str, span: Span) -> OxcDiagnosti
         .with_label(span)
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct NoRedeclare {
     built_in_globals: bool,
+}
+
+impl Default for NoRedeclare {
+    fn default() -> Self {
+        Self { built_in_globals: true }
+    }
 }
 
 declare_oxc_lint!(
@@ -130,6 +136,9 @@ impl Rule for NoRedeclare {
 #[test]
 fn test() {
     use crate::tester::Tester;
+
+    let defaults = NoRedeclare::default();
+    assert!(defaults.built_in_globals);
 
     let pass = vec![
         ("var a = 3; var b = function() { var a = 10; };", None),

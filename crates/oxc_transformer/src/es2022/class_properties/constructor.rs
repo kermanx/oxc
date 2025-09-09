@@ -112,10 +112,13 @@ use oxc_syntax::{
     scope::{ScopeFlags, ScopeId},
     symbol::{SymbolFlags, SymbolId},
 };
-use oxc_traverse::{BoundIdentifier, TraverseCtx};
+use oxc_traverse::BoundIdentifier;
 
-use crate::utils::ast_builder::{
-    create_assignment, create_class_constructor_with_params, create_super_call,
+use crate::{
+    context::TraverseCtx,
+    utils::ast_builder::{
+        create_assignment, create_class_constructor_with_params, create_super_call,
+    },
 };
 
 use super::{ClassProperties, utils::exprs_into_stmts};
@@ -300,7 +303,7 @@ impl<'a> ClassProperties<'a, '_> {
         let body = ctx.ast.vec1(ctx.ast.statement_expression(SPAN, body_exprs));
 
         // `(..._args) => (super(..._args), <inits>, this)`
-        let super_func = ctx.ast.expression_arrow_function_with_scope_id_and_pure(
+        let super_func = ctx.ast.expression_arrow_function_with_scope_id_and_pure_and_pife(
             SPAN,
             true,
             false,
@@ -317,6 +320,7 @@ impl<'a> ClassProperties<'a, '_> {
             NONE,
             ctx.ast.alloc_function_body(SPAN, ctx.ast.vec(), body),
             super_func_scope_id,
+            false,
             false,
         );
 
@@ -363,7 +367,7 @@ impl<'a> ClassProperties<'a, '_> {
         // `<inits>; return this;`
         let body_stmts = ctx.ast.vec_from_iter(exprs_into_stmts(inits, ctx).chain([return_stmt]));
         // `function() { <inits>; return this; }`
-        let super_func = ctx.ast.expression_function_with_scope_id_and_pure(
+        let super_func = ctx.ast.expression_function_with_scope_id_and_pure_and_pife(
             SPAN,
             FunctionType::FunctionExpression,
             None,
@@ -381,6 +385,7 @@ impl<'a> ClassProperties<'a, '_> {
             NONE,
             Some(ctx.ast.alloc_function_body(SPAN, directives, body_stmts)),
             super_func_scope_id,
+            false,
             false,
         );
 

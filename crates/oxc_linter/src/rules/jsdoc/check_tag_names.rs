@@ -43,6 +43,40 @@ declare_oxc_lint!(
     /// ```javascript
     /// /** @param */
     /// ```
+    ///
+    /// ### Options
+    ///
+    /// Configuration for allowed tags is done via [`settings.jsdoc.tagNamePreference`](/docs/guide/usage/linter/config-file-reference.html#settings-jsdoc-tagnamepreference).
+    /// There is no CLI-only parameter for this rule.
+    ///
+    /// You can add custom tags by adding a key-value pair where both match the name of the tag you want to add, like so:
+    ///
+    /// ::: code-group
+    ///
+    /// ```json [Config (.oxlintrc.json)]
+    /// {
+    ///   "plugins": ["jsdoc"],
+    ///   "rules": {
+    ///     "jsdoc/check-tag-names": "error"
+    ///   },
+    ///   "settings": { // [!code highlight:7]
+    ///     "jsdoc": {
+    ///       "tagNamePreference": {
+    ///         "customTagName": "customTagName"
+    ///       }
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    /// :::
+    ///
+    /// Examples of correct code for this rule with the above configuration, adding the `customTagName` tag:
+    ///
+    /// ```js
+    /// /**
+    ///  * @customTagName
+    ///  */
+    /// ```
     CheckTagNames,
     jsdoc,
     correctness
@@ -573,6 +607,17 @@ fn test() {
           Some(serde_json::json!([ { "definedTags": [] } ])),
           None,
       ),
+       // https://github.com/oxc-project/oxc/issues/13570
+        (
+          "
+          /**
+           * @import { Page } from '@playwright/test';
+           */
+          function quux (foo) { }
+      ",
+          Some(serde_json::json!([ { "definedTags": [] } ])),
+          None,
+      ),
         (
           "
           /**
@@ -1060,7 +1105,7 @@ fn test() {
         ),
     ];
 
-    let dts_pass = vec![
+    let dts_pass: Vec<(&'static str, Option<serde_json::Value>, Option<serde_json::Value>)> = vec![
         (
             "
         			        /** @default 0 */
@@ -1124,14 +1169,15 @@ fn test() {
             None,
         ),
     ];
-    let dts_fail = vec![(
-        "
+    let dts_fail: Vec<(&'static str, Option<serde_json::Value>, Option<serde_json::Value>)> =
+        vec![(
+            "
         			        /** @typoo {string} (fail: invalid name) */
         			        let a;
         			      ",
-        None,
-        None,
-    )];
+            None,
+            None,
+        )];
 
     Tester::new(CheckTagNames::NAME, CheckTagNames::PLUGIN, pass, fail).test_and_snapshot();
     // Currently only 1 snapshot can be saved under a rule name

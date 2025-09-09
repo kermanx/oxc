@@ -118,12 +118,8 @@ impl Rule for NoStaticOnlyClass {
                 return fixer.noop();
             }
 
-            let Some(parent) = ctx.nodes().parent_kind(node.id()) else {
-                return fixer.noop();
-            };
-
             if (matches!(
-                parent,
+                ctx.nodes().parent_kind(node.id()),
                 AstKind::ExportDefaultDeclaration(_) | AstKind::ReturnStatement(_)
             ) && class.id.is_some())
             {
@@ -181,7 +177,7 @@ impl Rule for NoStaticOnlyClass {
                             }
                         }
                         if let Some(pos) = target_semicolon_pos {
-                            rule_fixes.push(fixer.delete_range(Span::new(pos, pos + 1)));
+                            rule_fixes.push(fixer.delete_range(Span::sized(pos, 1)));
                         }
                         let replacement = format!("{name}{},", ctx.source_range(value.span()));
                         rule_fixes.push(fixer.replace(v.span, replacement));
@@ -212,7 +208,7 @@ impl Rule for NoStaticOnlyClass {
             let start = class.span.start;
             if class.id.is_none() {
                 // just remove the class keyword
-                rule_fixes.push(fixer.delete_range(Span::new(start, start + 5)));
+                rule_fixes.push(fixer.delete_range(Span::sized(start, 5)));
             } else {
                 let id = class.id.as_ref().unwrap();
                 let target = Span::new(start, id.span.end);

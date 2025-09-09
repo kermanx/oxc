@@ -3,7 +3,7 @@
 //! This plugin mainly does the following transformations:
 //!
 //! 1. transforms async generator functions (async function *name() {}) to generator functions
-//! and wraps them with `awaitAsyncGenerator` helper function.
+//!    and wraps them with `awaitAsyncGenerator` helper function.
 //! 2. transforms `await expr` expression to `yield awaitAsyncGenerator(expr)`.
 //! 3. transforms `yield * argument` expression to `yield asyncGeneratorDelegate(asyncIterator(argument))`.
 //! 4. transforms `for await` statement to `for` statement, and inserts many code to handle async iteration.
@@ -69,9 +69,14 @@ mod for_await;
 use oxc_allocator::TakeIn;
 use oxc_ast::ast::*;
 use oxc_span::SPAN;
-use oxc_traverse::{Ancestor, Traverse, TraverseCtx};
+use oxc_traverse::{Ancestor, Traverse};
 
-use crate::{common::helper_loader::Helper, context::TransformCtx, es2017::AsyncGeneratorExecutor};
+use crate::{
+    common::helper_loader::Helper,
+    context::{TransformCtx, TraverseCtx},
+    es2017::AsyncGeneratorExecutor,
+    state::TransformState,
+};
 
 pub struct AsyncGeneratorFunctions<'a, 'ctx> {
     ctx: &'ctx TransformCtx<'a>,
@@ -84,7 +89,7 @@ impl<'a, 'ctx> AsyncGeneratorFunctions<'a, 'ctx> {
     }
 }
 
-impl<'a> Traverse<'a> for AsyncGeneratorFunctions<'a, '_> {
+impl<'a> Traverse<'a, TransformState<'a>> for AsyncGeneratorFunctions<'a, '_> {
     fn exit_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut TraverseCtx<'a>) {
         let new_expr = match expr {
             Expression::AwaitExpression(await_expr) => {

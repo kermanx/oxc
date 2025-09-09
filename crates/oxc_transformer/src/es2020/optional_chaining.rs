@@ -52,9 +52,13 @@ use std::mem;
 use oxc_allocator::{CloneIn, TakeIn};
 use oxc_ast::{NONE, ast::*};
 use oxc_span::SPAN;
-use oxc_traverse::{Ancestor, BoundIdentifier, MaybeBoundIdentifier, Traverse, TraverseCtx};
+use oxc_traverse::{Ancestor, BoundIdentifier, MaybeBoundIdentifier, Traverse};
 
-use crate::{TransformCtx, utils::ast_builder::wrap_expression_in_arrow_function_iife};
+use crate::{
+    context::{TransformCtx, TraverseCtx},
+    state::TransformState,
+    utils::ast_builder::wrap_expression_in_arrow_function_iife,
+};
 
 #[derive(Debug)]
 enum CallContext<'a> {
@@ -88,7 +92,7 @@ impl<'a, 'ctx> OptionalChaining<'a, 'ctx> {
     }
 }
 
-impl<'a> Traverse<'a> for OptionalChaining<'a, '_> {
+impl<'a> Traverse<'a, TransformState<'a>> for OptionalChaining<'a, '_> {
     // `#[inline]` because this is a hot path
     #[inline]
     fn enter_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut TraverseCtx<'a>) {
@@ -409,15 +413,15 @@ impl<'a> OptionalChaining<'a, '_> {
     /// 2. Recurse and go into the deepest optional expression `foo?.bar`
     ///
     /// 3. The `foo?.bar` is an optional [`StaticMemberExpression`], so transform `foo` to
-    /// `foo === null || foo === void 0` and return the transformed expression back to the parent
+    ///    `foo === null || foo === void 0` and return the transformed expression back to the parent
     ///
     /// 4. Got to here, we now have a left expression as the above transformed expression, and the current expression
-    /// is `foo.bar?.baz`, and it's also an optional [`StaticMemberExpression`], so transform `foo.bar` to
-    /// `(_foo$bar = foo.bar) === null || _foo$bar === void 0` and join it with the left expression, and return
-    /// the joined expression back to the parent.
+    ///    is `foo.bar?.baz`, and it's also an optional [`StaticMemberExpression`], so transform `foo.bar` to
+    ///    `(_foo$bar = foo.bar) === null || _foo$bar === void 0` and join it with the left expression, and return
+    ///    the joined expression back to the parent.
     ///
     /// > NOTE: The callee(`foo.bar`) is assigned to a temp binding(`_foo$bar`), so the original callee is also replaced with
-    /// the temp binding(`_foo$bar`)
+    /// > the temp binding(`_foo$bar`)
     ///
     /// 5. Repeat the above steps until back to the root expression, and the final expression will be
     ///

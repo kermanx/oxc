@@ -415,7 +415,7 @@ impl<'a> ParserImpl<'a> {
             fatal_error: None,
             token: Token::default(),
             prev_token_end: 0,
-            state: ParserState::new(allocator),
+            state: ParserState::new(),
             ctx: Self::default_context(source_type, options),
             ast: AstBuilder::new(allocator),
             module_record_builder: ModuleRecordBuilder::new(allocator),
@@ -513,8 +513,9 @@ impl<'a> ParserImpl<'a> {
 
     #[expect(clippy::cast_possible_truncation)]
     fn parse_program(&mut self) -> Program<'a> {
-        // initialize cur_token and prev_token by moving onto the first token
-        self.bump_any();
+        // Initialize by moving onto the first token.
+        // Checks for hashbang comment.
+        self.token = self.lexer.first_token();
 
         let hashbang = self.parse_hashbang();
         let (directives, statements) =
@@ -690,12 +691,22 @@ mod test {
                 "V8 runtime calls cannot have spread elements as arguments"
             );
         }
-
         {
             let source = "%DebugPrint('~~')";
             let ret = Parser::new(&allocator, source, source_type).parse();
             assert_eq!(ret.errors.len(), 1);
             assert_eq!(ret.errors[0].to_string(), "Unexpected token");
+        }
+        {
+            // https://github.com/oxc-project/oxc/issues/12121
+            let source = "interface Props extends %enuProps {}";
+            let source_type = SourceType::default().with_typescript(true);
+            // Should not panic whether `allow_v8_intrinsics` is set or not.
+            let opts = ParseOptions { allow_v8_intrinsics: true, ..ParseOptions::default() };
+            let ret = Parser::new(&allocator, source, source_type).with_options(opts).parse();
+            assert_eq!(ret.errors.len(), 1);
+            let ret = Parser::new(&allocator, source, source_type).parse();
+            assert_eq!(ret.errors.len(), 1);
         }
     }
 

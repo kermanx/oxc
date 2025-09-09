@@ -4,9 +4,10 @@
 use oxc_ast::{NONE, ast::*};
 use oxc_span::SPAN;
 use oxc_syntax::reference::ReferenceFlags;
-use oxc_traverse::TraverseCtx;
 
-use crate::{common::helper_loader::Helper, utils::ast_builder::create_assignment};
+use crate::{
+    common::helper_loader::Helper, context::TraverseCtx, utils::ast_builder::create_assignment,
+};
 
 use super::{
     ClassProperties,
@@ -118,7 +119,7 @@ impl<'a> ClassProperties<'a, '_> {
                 None if self.set_public_class_fields
                     && self.remove_class_fields_without_initializer =>
                 {
-                    return;
+                    return self.extract_computed_key(prop, ctx);
                 }
                 None => ctx.ast.void_0(SPAN),
             };

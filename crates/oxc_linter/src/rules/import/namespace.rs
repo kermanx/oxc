@@ -130,12 +130,10 @@ impl Rule for Namespace {
             let (source, module) = match &entry.import_name {
                 ImportImportName::NamespaceObject => {
                     let source = entry.module_request.name();
-                    match loaded_modules.get(source) {
-                        Some(module) => (source.to_string(), Arc::clone(module)),
-                        _ => {
-                            return;
-                        }
-                    }
+                    let Some(module) = loaded_modules.get(source) else {
+                        return;
+                    };
+                    (source.to_string(), Arc::clone(module))
                 }
                 ImportImportName::Name(name) => {
                     let Some(loaded_module) = loaded_modules.get(entry.module_request.name())
@@ -168,57 +166,58 @@ impl Rule for Namespace {
             };
 
             ctx.scoping().get_resolved_references(symbol_id).for_each(|reference| {
-                if let Some(node) = ctx.nodes().parent_node(reference.node_id()) {
-                    let name = entry.local_name.name();
+                let parent = ctx.nodes().parent_node(reference.node_id());
+                let name = entry.local_name.name();
 
-                    match node.kind() {
-                        AstKind::MemberExpression(member) => {
-                            if matches!(
-                                ctx.nodes().parent_kind(node.id()),
-                                Some(AstKind::SimpleAssignmentTarget(_))
-                            ) {
-                                ctx.diagnostic(assignment(member.span(), name));
+                match parent.kind() {
+                    member if member.is_member_expression_kind() => {
+                        let parent_kind = ctx.nodes().parent_kind(parent.id());
+                        let is_assignment = match parent_kind {
+                            AstKind::AssignmentExpression(assign_expr) => {
+                                assign_expr.left.span() == parent.span()
                             }
-
-                            if !self.allow_computed && member.is_computed() {
-                                return ctx.diagnostic(computed_reference(member.span(), name));
-                            }
-
-                            check_deep_namespace_for_node(
-                                node,
-                                &source,
-                                vec![entry.local_name.name().to_string()].as_slice(),
-                                &module,
-                                ctx,
-                            );
+                            _ => false,
+                        };
+                        if is_assignment || matches!(parent_kind, AstKind::IdentifierReference(_)) {
+                            ctx.diagnostic(assignment(member.span(), name));
                         }
-                        AstKind::JSXMemberExpressionObject(_) => {
-                            if let Some(AstKind::JSXMemberExpression(expr)) =
-                                ctx.nodes().parent_kind(node.id())
-                            {
-                                check_binding_exported(
-                                    &expr.property.name,
-                                    || no_export(expr.property.span, &expr.property.name, &source),
-                                    &module,
-                                    ctx,
-                                );
-                            }
-                        }
-                        AstKind::VariableDeclarator(decl) => {
-                            let BindingPatternKind::ObjectPattern(pattern) = &decl.id.kind else {
-                                return;
-                            };
 
-                            check_deep_namespace_for_object_pattern(
-                                pattern,
-                                &source,
-                                &[entry.local_name.name().to_string()],
-                                &module,
-                                ctx,
-                            );
+                        if !self.allow_computed
+                            && matches!(member, AstKind::ComputedMemberExpression(_))
+                        {
+                            return ctx.diagnostic(computed_reference(member.span(), name));
                         }
-                        _ => {}
+
+                        check_deep_namespace_for_node(
+                            parent,
+                            &source,
+                            vec![entry.local_name.name().to_string()].as_slice(),
+                            &module,
+                            ctx,
+                        );
                     }
+                    AstKind::JSXMemberExpression(expr) => {
+                        check_binding_exported(
+                            &expr.property.name,
+                            || no_export(expr.property.span, &expr.property.name, &source),
+                            &module,
+                            ctx,
+                        );
+                    }
+                    AstKind::VariableDeclarator(decl) => {
+                        let BindingPatternKind::ObjectPattern(pattern) = &decl.id.kind else {
+                            return;
+                        };
+
+                        check_deep_namespace_for_object_pattern(
+                            pattern,
+                            &source,
+                            &[entry.local_name.name().to_string()],
+                            &module,
+                            ctx,
+                        );
+                    }
+                    _ => {}
                 }
             });
         }
@@ -273,11 +272,14 @@ fn check_deep_namespace_for_node(
     module: &Arc<ModuleRecord>,
     ctx: &LintContext<'_>,
 ) -> Option<()> {
-    let expr = node.kind().as_member_expression()?;
-    let (span, name) = expr.static_property_info()?;
+    let (span, name) = match node.kind() {
+        AstKind::StaticMemberExpression(mem_expr) => mem_expr.static_property_info(),
+        AstKind::ComputedMemberExpression(computed_expr) => computed_expr.static_property_info()?,
+        _ => return None,
+    };
 
     if let Some(module_source) = get_module_request_name(name, module) {
-        let parent_node = ctx.nodes().parent_node(node.id())?;
+        let parent_node = ctx.nodes().parent_node(node.id());
         let loaded_modules = module.loaded_modules.read().unwrap();
         let module_record = loaded_modules.get(module_source.as_str())?;
         let mut namespaces = namespaces.to_owned();

@@ -17,13 +17,21 @@ const _: () = {
     assert!(offset_of!(RawTransferData, module) == 152);
     assert!(offset_of!(RawTransferData, errors) == 256);
 
+    // Padding: 3 bytes
+    assert!(size_of::<RawTransferMetadata>() == 16);
+    assert!(align_of::<RawTransferMetadata>() == 8);
+    assert!(offset_of!(RawTransferMetadata, data_offset) == 8);
+    assert!(offset_of!(RawTransferMetadata, is_ts) == 12);
+    assert!(offset_of!(RawTransferMetadata, _padding) == 0);
+
     // Padding: 7 bytes
-    assert!(size_of::<Error>() == 64);
+    assert!(size_of::<Error>() == 80);
     assert!(align_of::<Error>() == 8);
-    assert!(offset_of!(Error, severity) == 56);
+    assert!(offset_of!(Error, severity) == 72);
     assert!(offset_of!(Error, message) == 0);
     assert!(offset_of!(Error, labels) == 16);
     assert!(offset_of!(Error, help_message) == 40);
+    assert!(offset_of!(Error, codeframe) == 56);
 
     assert!(size_of::<ErrorSeverity>() == 1);
     assert!(align_of::<ErrorSeverity>() == 1);
@@ -68,12 +76,20 @@ const _: () = {
     assert!(offset_of!(RawTransferData, errors) == 172);
 
     // Padding: 3 bytes
-    assert!(size_of::<Error>() == 36);
+    assert!(size_of::<RawTransferMetadata>() == 16);
+    assert!(align_of::<RawTransferMetadata>() == 8);
+    assert!(offset_of!(RawTransferMetadata, data_offset) == 8);
+    assert!(offset_of!(RawTransferMetadata, is_ts) == 12);
+    assert!(offset_of!(RawTransferMetadata, _padding) == 0);
+
+    // Padding: 3 bytes
+    assert!(size_of::<Error>() == 44);
     assert!(align_of::<Error>() == 4);
-    assert!(offset_of!(Error, severity) == 32);
+    assert!(offset_of!(Error, severity) == 40);
     assert!(offset_of!(Error, message) == 0);
     assert!(offset_of!(Error, labels) == 8);
     assert!(offset_of!(Error, help_message) == 24);
+    assert!(offset_of!(Error, codeframe) == 32);
 
     assert!(size_of::<ErrorSeverity>() == 1);
     assert!(align_of::<ErrorSeverity>() == 1);

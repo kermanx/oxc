@@ -89,7 +89,7 @@ impl Rule for NoCondAssign {
             }
             AstKind::AssignmentExpression(expr) if self.config == NoCondAssignConfig::Always => {
                 let mut spans = vec![];
-                for ancestor in ctx.nodes().ancestors(node.id()).skip(1) {
+                for ancestor in ctx.nodes().ancestors(node.id()) {
                     match ancestor.kind() {
                         AstKind::IfStatement(if_stmt) => {
                             spans.push(if_stmt.test.span());
@@ -111,9 +111,7 @@ impl Rule for NoCondAssign {
                         AstKind::Function(_)
                         | AstKind::ArrowFunctionExpression(_)
                         | AstKind::Program(_)
-                        | AstKind::BlockStatement(_) => {
-                            break;
-                        }
+                        | AstKind::BlockStatement(_) => break,
                         _ => {}
                     }
                 }

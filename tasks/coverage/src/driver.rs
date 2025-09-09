@@ -6,7 +6,7 @@ use oxc::{
     CompilerInterface,
     allocator::Allocator,
     ast::{
-        AstKind, Comment,
+        Comment,
         ast::{Program, RegExpLiteral},
     },
     ast_visit::{Visit, walk},
@@ -86,18 +86,13 @@ impl CompilerInterface for Driver {
             self.errors.push(OxcDiagnostic::error("SourceType must not be unambiguous."));
         }
         // Make sure serialization doesn't crash; also for code coverage.
-        program.to_estree_ts_json_with_fixes();
+        program.to_estree_ts_json_with_fixes(false);
         ControlFlow::Continue(())
     }
 
     fn after_semantic(&mut self, ret: &mut SemanticBuilderReturn) -> ControlFlow<()> {
         if self.check_semantic {
-            let Some(root_node) = ret.semantic.nodes().root_node() else {
-                return ControlFlow::Break(());
-            };
-            let AstKind::Program(program) = root_node.kind() else {
-                return ControlFlow::Break(());
-            };
+            let program = ret.semantic.nodes().program();
             if let Some(errors) = check_semantic_ids(program) {
                 self.errors.extend(errors);
                 return ControlFlow::Break(());
@@ -111,13 +106,12 @@ impl CompilerInterface for Driver {
         program: &mut Program<'_>,
         transformer_return: &mut TransformerReturn,
     ) -> ControlFlow<()> {
-        if self.check_semantic {
-            if let Some(errors) =
+        if self.check_semantic
+            && let Some(errors) =
                 check_semantic_after_transform(&transformer_return.scoping, program)
-            {
-                self.errors.extend(errors);
-                return ControlFlow::Break(());
-            }
+        {
+            self.errors.extend(errors);
+            return ControlFlow::Break(());
         }
         ControlFlow::Continue(())
     }

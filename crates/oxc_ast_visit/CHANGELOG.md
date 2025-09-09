@@ -2,6 +2,159 @@
 
 All notable changes to this package will be documented in this file.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0).
+
+
+
+
+
+## [0.83.0] - 2025-08-29
+
+### 🚀 Features
+
+- bb10c88 ast_visit: Add `Utf8ToUtf16Converter::convert_program` method (#13341) (overlookmotel)
+- 59d2c08 ast_visit: `Utf8ToUtf16` translate back from UTF-16 to UTF-8 (#13340) (overlookmotel)
+
+### 🐛 Bug Fixes
+
+- 1cdc420 ast_visit: Correct and expand comments in `Utf8ToUtf16Converter` (#13310) (overlookmotel)
+
+### 🚜 Refactor
+
+- cd5a9ca ast_visit: `Utf8ToUtf16` record end offset of multi-byte chars (#13339) (overlookmotel)
+
+
+
+
+
+## [0.82.0] - 2025-08-12
+
+### 💥 BREAKING CHANGES
+
+- 128b527 data_structures: [**BREAKING**] Remove `PointerExt` trait (#12903) (overlookmotel)
+
+### 🚜 Refactor
+
+- c072e01 all: Add missing lifetimes in function return types (#12895) (overlookmotel)
+
+
+## [0.81.0] - 2025-08-06
+
+### 💥 BREAKING CHANGES
+
+- 2cc1001 ast: [**BREAKING**] Remove `ExportDefaultDeclaration` `exported` field (#12808) (overlookmotel)
+- 50b91ac ast: [**BREAKING**] Remove `IdentifierReference` from `qualifier` field of `TSImportType` (#12799) (camc314)
+
+
+## [0.80.0] - 2025-08-03
+
+### 💥 BREAKING CHANGES
+
+- cd93174 ast: [**BREAKING**] Introduce `WithClauseKeyword` (#12741) (overlookmotel)
+
+### 📚 Documentation
+
+- de1de35 rust: Add comprehensive README.md documentation for all Rust crates (#12706) (Copilot)
+
+
+
+## [0.79.0] - 2025-07-30
+
+### 🚜 Refactor
+
+- a696227 linter: Remove AstKind for SimpleAssignmentTarget (#12401) (Tyler Earls)
+
+
+
+
+
+## [0.77.1] - 2025-07-16
+
+### 🚀 Features
+
+- 9b14fbc ast: Add `ThisExpression` to `TSTypeName` (#12156) (Boshen)
+
+### 🚜 Refactor
+
+- ee761de ast: Remove `AstKind` for `AssignmentTarget` (#12252) (Tyler Earls)
+- c025868 ast: Remove `AstKind` for `TSFunctionType` (#12287) (camc314)
+
+
+## [0.77.0] - 2025-07-12
+
+### 🚜 Refactor
+
+- 8814c53 ast: Remove `AstKind` for `PropertyKey` (#12108) (camchenry)
+
+
+## [0.76.0] - 2025-07-08
+
+### 🚜 Refactor
+
+- e8e2a25 ast: Remove `AstKind` for `AssignmentTargetPattern` (#12105) (camchenry)
+
+
+## [0.75.1] - 2025-07-03
+
+### 🚜 Refactor
+
+- f1d4086 ast: Remove `AstKind` for `ModuleDeclaration` (#12022) (camchenry)
+- 754c05a ast: Remove `AstKind` for `TSTypeName` (#11990) (camchenry)
+- f7a2ae4 ast: Add `AstKind` for `AssignmentTargetPropertyIdentifier`, `AssignmentTargetPropertyProperty` (#11985) (camc314)
+- cfa52c2 ast: Add `AstKind` for `AssignmentTargetRest` (#11984) (camc314)
+- 54582cb ast: Add `AstKind` for `BindingProperty` (#11974) (camc314)
+- 9f6784a ast: Add `AstKind` for `TSInterfaceBody` (#11967) (camc314)
+- 3f50cef ast: Add `AstKind` for `TSIndexSignature` (#11966) (camc314)
+- 03bce3f ast: Add `AstKind` for `TSConstructorType` (#11965) (camc314)
+- 0cef370 ast: Add `AstKind::TemplateElement` (#11955) (camchenry)
+
+
+## [0.75.0] - 2025-06-25
+
+### 🚜 Refactor
+
+- 87b8496 ast: Remove `AstKind` for `MemberExpression` and replace with `StaticMemberExpression` and `PrivateFieldExpression` (#11767) (camchenry)
+- 190e390 ast: Add `AstKind` for `ComputedMemberExpression` (#11766) (camchenry)
+
+
+
+
+## [0.73.1] - 2025-06-17
+
+### 🚀 Features
+
+- 17f5dbe ast: Add AstKind to ImportAttribute node (#11765) (therewillbecode)
+- eb9db97 ast: Add AstKind to AccessorProperty node (#11764) (therewillbecode)
+- 584844c ast: Add AstKind to TSNamespaceExportDeclaration node (#11754) (therewillbecode)
+- 6095438 ast: Add AstKind to TSRestType node (#11752) (therewillbecode)
+- b8237b8 ast: Add AstKind to TSOptionalType node (#11751) (therewillbecode)
+- b949ece ast: Add AstKind to TSTupleType node (#11749) (therewillbecode)
+- d74c4af ast: Add AstKind to `TSTypePredicate` node (#11726) (therewillbecode)
+- c25b153 ast: Add AstKind to ` TSCallSignatureDeclaration` node (#11725) (therewillbecode)
+- 866470a ast: Add AstKind to `TSIndexSignature` node (#11724) (therewillbecode)
+- 37d4c9a ast: Add `AstKind` for `WithClause` (#11711) (camchenry)
+
+### 🚜 Refactor
+
+- 3d89012 ast: Add `AstKind` for `TSTypeOperator` (#11747) (camchenry)
+- 5ca3d04 ast: Add `TSArrayType` as `AstKind` (#11745) (camchenry)
+- 4fbe4b1 ast: Remove AstKind from `TSModuleReference` node (#11732) (therewillbecode)
+- 219adcc ast: Don't generate AstKind for ArrayExpressionElement (#11684) (Ulrich Stark)
+
+
+## [0.73.0] - 2025-06-13
+
+### 🚜 Refactor
+
+- 8e30c5f ast: Don't generate AstKind for ForStatementInit (#11617) (Ulrich Stark)
+- 9136685 ast: Create AstKinds for jsdoc types (#11597) (Ulrich Stark)
+- d41fb13 ast: Get jsx types out of AstKind exceptions (#11535) (Ulrich Stark)
+
+
+# Changelog
+
+All notable changes to this package will be documented in this file.
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project does not adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) until v1.0.0.
 
 ## [0.71.0] - 2025-05-20

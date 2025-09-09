@@ -2,18 +2,37 @@
 /* eslint-disable */
 
 export * from '@oxc-project/types';
-export declare class ParseResult {
-  get program(): import("@oxc-project/types").Program
-  get module(): EcmaScriptModule
-  get comments(): Array<Comment>
-  get errors(): Array<OxcError>
-}
-
 export interface Comment {
   type: 'Line' | 'Block'
   value: string
   start: number
   end: number
+}
+
+export interface ErrorLabel {
+  message?: string
+  start: number
+  end: number
+}
+
+export interface OxcError {
+  severity: Severity
+  message: string
+  labels: Array<ErrorLabel>
+  helpMessage?: string
+  codeframe?: string
+}
+
+export declare const enum Severity {
+  Error = 'Error',
+  Warning = 'Warning',
+  Advice = 'Advice'
+}
+export declare class ParseResult {
+  get program(): import("@oxc-project/types").Program
+  get module(): EcmaScriptModule
+  get comments(): Array<Comment>
+  get errors(): Array<OxcError>
 }
 
 export interface DynamicImport {
@@ -39,12 +58,6 @@ export interface EcmaScriptModule {
   dynamicImports: Array<DynamicImport>
   /** Span positions` of `import.meta` */
   importMetas: Array<Span>
-}
-
-export interface ErrorLabel {
-  message?: string
-  start: number
-  end: number
 }
 
 export interface ExportExportName {
@@ -100,14 +113,6 @@ export declare const enum ExportLocalNameKind {
   None = 'None'
 }
 
-/**
- * Get offset within a `Uint8Array` which is aligned on 4 GiB.
- *
- * Does not check that the offset is within bounds of `buffer`.
- * To ensure it always is, provide a `Uint8Array` of at least 4 GiB size.
- */
-export declare function getBufferOffset(buffer: Uint8Array): number
-
 export interface ImportName {
   kind: ImportNameKind
   name?: string
@@ -124,14 +129,6 @@ export declare const enum ImportNameKind {
   Default = 'Default'
 }
 
-export interface OxcError {
-  severity: Severity
-  message: string
-  labels: Array<ErrorLabel>
-  helpMessage?: string
-  codeframe?: string
-}
-
 /**
  * Parse asynchronously.
  *
@@ -140,8 +137,8 @@ export interface OxcError {
 export declare function parseAsync(filename: string, sourceText: string, options?: ParserOptions | undefined | null): Promise<ParseResult>
 
 export interface ParserOptions {
-  /** Treat the source text as `js`, `jsx`, `ts`, or `tsx`. */
-  lang?: 'js' | 'jsx' | 'ts' | 'tsx'
+  /** Treat the source text as `js`, `jsx`, `ts`, `tsx` or `dts`. */
+  lang?: 'js' | 'jsx' | 'ts' | 'tsx' | 'dts'
   /** Treat the source text as `script` or `module` code. */
   sourceType?: 'script' | 'module' | 'unambiguous' | undefined
   /**
@@ -152,6 +149,14 @@ export interface ParserOptions {
    * The type of the file is determined from `lang` option, or extension of provided `filename`.
    */
   astType?: 'js' | 'ts'
+  /**
+   * Controls whether the `range` property is included on AST nodes.
+   * The `range` property is a `[number, number]` which indicates the start/end offsets
+   * of the node in the file contents.
+   *
+   * @default false
+   */
+  range?: boolean
   /**
    * Emit `ParenthesizedExpression` and `TSParenthesizedType` in AST.
    *
@@ -175,42 +180,8 @@ export interface ParserOptions {
 /** Parse synchronously. */
 export declare function parseSync(filename: string, sourceText: string, options?: ParserOptions | undefined | null): ParseResult
 
-/**
- * Parses AST into provided `Uint8Array` buffer.
- *
- * Source text must be written into the start of the buffer, and its length (in UTF-8 bytes)
- * provided as `source_len`.
- *
- * This function will parse the source, and write the AST into the buffer, starting at the end.
- *
- * It also writes to the very end of the buffer the offset of `Program` within the buffer.
- *
- * Caller can deserialize data from the buffer on JS side.
- *
- * # SAFETY
- *
- * Caller must ensure:
- * * Source text is written into start of the buffer.
- * * Source text's UTF-8 byte length is `source_len`.
- * * The 1st `source_len` bytes of the buffer comprises a valid UTF-8 string.
- *
- * If source text is originally a JS string on JS side, and converted to a buffer with
- * `Buffer.from(str)` or `new TextEncoder().encode(str)`, this guarantees it's valid UTF-8.
- *
- * # Panics
- *
- * Panics if source text is too long, or AST takes more memory than is available in the buffer.
- */
-export declare function parseSyncRaw(filename: string, buffer: Uint8Array, sourceLen: number, options?: ParserOptions | undefined | null): void
-
 /** Returns `true` if raw transfer is supported on this platform. */
 export declare function rawTransferSupported(): boolean
-
-export declare const enum Severity {
-  Error = 'Error',
-  Warning = 'Warning',
-  Advice = 'Advice'
-}
 
 export interface Span {
   start: number

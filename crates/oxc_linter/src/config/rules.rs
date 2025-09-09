@@ -1,5 +1,6 @@
 use std::{borrow::Cow, fmt};
 
+use itertools::Itertools;
 use rustc_hash::FxHashMap;
 use schemars::{JsonSchema, r#gen::SchemaGenerator, schema::Schema};
 use serde::{
@@ -11,7 +12,8 @@ use serde::{
 use oxc_diagnostics::{Error, OxcDiagnostic};
 
 use crate::{
-    AllowWarnDeny,
+    AllowWarnDeny, BuiltinLintPlugins, ExternalPluginStore,
+    external_plugin_store::{ExternalRuleId, ExternalRuleLookupError},
     rules::{RULES, RuleEnum},
     utils::{is_eslint_rule_adapted_to_typescript, is_jest_rule_adapted_to_vitest},
 };
@@ -58,98 +60,59 @@ pub struct ESLintRule {
 }
 
 impl OxlintRules {
-    pub(crate) fn override_rules(&self, rules_for_override: &mut RuleSet, all_rules: &[RuleEnum]) {
-        use itertools::Itertools;
-        let mut rules_to_replace: Vec<(RuleEnum, AllowWarnDeny)> = vec![];
-        let mut rules_to_remove: Vec<RuleEnum> = vec![];
+    pub(crate) fn override_rules(
+        &self,
+        rules_for_override: &mut RuleSet,
+        external_rules_for_override: &mut FxHashMap<ExternalRuleId, AllowWarnDeny>,
+        all_rules: &[RuleEnum],
+        external_plugin_store: &ExternalPluginStore,
+    ) -> Result<(), ExternalRuleLookupError> {
+        let mut rules_to_replace = vec![];
 
-        // Rules can have the same name but different plugin names
         let lookup = self.rules.iter().into_group_map_by(|r| r.rule_name.as_str());
 
         for (name, rule_configs) in &lookup {
-            match rule_configs.len() {
-                0 => unreachable!(),
-                1 => {
-                    let rule_config = &rule_configs[0];
-                    let (rule_name, plugin_name) = transform_rule_and_plugin_name(
-                        &rule_config.rule_name,
-                        &rule_config.plugin_name,
-                    );
-                    let severity = rule_config.severity;
-                    match severity {
-                        AllowWarnDeny::Warn | AllowWarnDeny::Deny => {
-                            if let Some(rule) = all_rules
-                                .iter()
-                                .find(|r| r.name() == rule_name && r.plugin_name() == plugin_name)
-                            {
-                                let config = rule_config.config.clone().unwrap_or_default();
-                                let rule = rule.read_json(config);
-                                rules_to_replace.push((rule, severity));
-                            }
-                        }
-                        AllowWarnDeny::Allow => {
-                            if let Some((rule, _)) = rules_for_override.iter().find(|(r, _)| {
-                                r.name() == rule_name && r.plugin_name() == plugin_name
-                            }) {
-                                rules_to_remove.push(rule.clone());
-                            }
-                            // If the given rule is not found in the rule list (for example, if all rules are disabled),
-                            // then look it up in the entire rules list and add it.
-                            else if let Some(rule) = all_rules
-                                .iter()
-                                .find(|r| r.name() == rule_name && r.plugin_name() == plugin_name)
-                            {
-                                let config = rule_config.config.clone().unwrap_or_default();
-                                let rule = rule.read_json(config);
-                                rules_to_remove.push(rule);
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    let rules = rules_for_override
-                        .iter()
-                        .filter_map(|(r, _)| {
-                            if r.name() == *name { Some((r.plugin_name(), r)) } else { None }
-                        })
-                        .collect::<FxHashMap<_, _>>();
+            let rules_map = rules_for_override
+                .iter()
+                .filter(|&(r, _)| (r.name() == *name))
+                .map(|(r, _)| (r.plugin_name(), r))
+                .collect::<FxHashMap<_, _>>();
 
-                    for rule_config in rule_configs {
-                        let (rule_name, plugin_name) = transform_rule_and_plugin_name(
-                            &rule_config.rule_name,
-                            &rule_config.plugin_name,
-                        );
+            for rule_config in rule_configs {
+                let (rule_name, plugin_name) = transform_rule_and_plugin_name(
+                    &rule_config.rule_name,
+                    &rule_config.plugin_name,
+                );
+                let config = rule_config.config.clone().unwrap_or_default();
+                let severity = rule_config.severity;
 
-                        if rule_config.severity.is_warn_deny() {
-                            let config = rule_config.config.clone().unwrap_or_default();
-                            if let Some(rule) = rules.get(&plugin_name) {
-                                rules_to_replace
-                                    .push((rule.read_json(config), rule_config.severity));
-                            }
-                            // If the given rule is not found in the rule list (for example, if all rules are disabled),
-                            // then look it up in the entire rules list and add it.
-                            else if let Some(rule) = all_rules
-                                .iter()
-                                .find(|r| r.name() == rule_name && r.plugin_name() == plugin_name)
-                            {
-                                rules_to_replace
-                                    .push((rule.read_json(config), rule_config.severity));
-                            }
-                        } else if let Some(&rule) = rules.get(&plugin_name) {
-                            rules_to_remove.push(rule.clone());
-                        }
+                // TODO(camc314): remove the `plugin_name == "eslint"`
+                if plugin_name == "eslint" || !BuiltinLintPlugins::from(plugin_name).is_empty() {
+                    let rule = rules_map.get(&plugin_name).copied().or_else(|| {
+                        all_rules
+                            .iter()
+                            .find(|r| r.name() == rule_name && r.plugin_name() == plugin_name)
+                    });
+                    if let Some(rule) = rule {
+                        rules_to_replace.push((rule.read_json(config), severity));
                     }
+                } else {
+                    let external_rule_id =
+                        external_plugin_store.lookup_rule_id(plugin_name, rule_name)?;
+                    external_rules_for_override
+                        .entry(external_rule_id)
+                        .and_modify(|sev| *sev = severity)
+                        .or_insert(severity);
                 }
             }
         }
 
-        for rule in rules_to_remove {
-            rules_for_override.remove(&rule);
-        }
         for (rule, severity) in rules_to_replace {
             let _ = rules_for_override.remove(&rule);
             rules_for_override.insert(rule, severity);
         }
+
+        Ok(())
     }
 }
 
@@ -262,7 +225,9 @@ fn parse_rule_key(name: &str) -> (String, String) {
             RULES
                 .iter()
                 .find(|r| r.name() == name)
-                .map_or("unknown_plugin", RuleEnum::plugin_name)
+                // plugins under the `eslint` scope are the only rules that are supported
+                // to exist in the config file under just the rule name (no plugin)
+                .map_or("eslint", RuleEnum::plugin_name)
                 .to_string(),
             name.to_string(),
         );
@@ -345,11 +310,12 @@ impl ESLintRule {
 #[cfg(test)]
 #[expect(clippy::default_trait_access)]
 mod test {
+    use rustc_hash::FxHashMap;
     use serde::Deserialize;
     use serde_json::{Value, json};
 
     use crate::{
-        AllowWarnDeny,
+        AllowWarnDeny, ExternalPluginStore,
         rules::{RULES, RuleEnum},
     };
 
@@ -380,7 +346,7 @@ mod test {
 
         let r3 = rules.next().unwrap();
         assert_eq!(r3.rule_name, "dummy");
-        assert_eq!(r3.plugin_name, "unknown_plugin");
+        assert_eq!(r3.plugin_name, "eslint");
         assert!(r3.severity.is_warn_deny());
         assert_eq!(r3.config, Some(serde_json::json!(["arg1", "args2"])));
 
@@ -399,7 +365,11 @@ mod test {
 
     fn r#override(rules: &mut RuleSet, rules_rc: &Value) {
         let rules_config = OxlintRules::deserialize(rules_rc).unwrap();
-        rules_config.override_rules(rules, &RULES);
+        let mut external_rules_for_override = FxHashMap::default();
+        let external_linter_store = ExternalPluginStore::default();
+        rules_config
+            .override_rules(rules, &mut external_rules_for_override, &RULES, &external_linter_store)
+            .unwrap();
     }
 
     #[test]
@@ -454,7 +424,7 @@ mod test {
         rules.insert(RuleEnum::EslintNoConsole(Default::default()), AllowWarnDeny::Deny);
         r#override(&mut rules, &json!({ "eslint/no-console": "off" }));
 
-        assert!(rules.is_empty());
+        assert!(!rules.iter().any(|(_, severity)| severity.is_warn_deny()));
     }
 
     #[test]

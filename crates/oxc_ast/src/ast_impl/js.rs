@@ -4,7 +4,7 @@ use std::{
     fmt::{self, Display},
 };
 
-use oxc_span::{Atom, Span};
+use oxc_span::{Atom, GetSpan, Span};
 use oxc_syntax::{operator::UnaryOperator, scope::ScopeFlags};
 
 use crate::ast::*;
@@ -91,6 +91,7 @@ impl<'a> Expression<'a> {
     /// Returns `true` for [string literals](StringLiteral) matching the
     /// expected value. Note that [non-substitution template
     /// literals](TemplateLiteral) are not considered.
+    #[inline]
     pub fn is_specific_string_literal(&self, string: &str) -> bool {
         match self {
             Self::StringLiteral(s) => s.value == string,
@@ -163,8 +164,8 @@ impl<'a> Expression<'a> {
     /// Remove nested parentheses from this expression.
     pub fn without_parentheses(&self) -> &Self {
         let mut expr = self;
-        while let Expression::ParenthesizedExpression(paran_expr) = expr {
-            expr = &paran_expr.expression;
+        while let Expression::ParenthesizedExpression(paren_expr) = expr {
+            expr = &paren_expr.expression;
         }
         expr
     }
@@ -314,7 +315,7 @@ impl<'a> Expression<'a> {
     /// Note that this includes [`Class`]s.
     /// <https://262.ecma-international.org/15.0/#sec-isanonymousfunctiondefinition>
     pub fn is_anonymous_function_definition(&self) -> bool {
-        match self {
+        match self.without_parentheses() {
             Self::ArrowFunctionExpression(_) => true,
             Self::FunctionExpression(func) => func.name().is_none(),
             Self::ClassExpression(class) => class.name().is_none(),
@@ -341,7 +342,7 @@ impl<'a> Expression<'a> {
     /// or [`ImportExpression`].
     pub fn is_call_like_expression(&self) -> bool {
         self.is_call_expression()
-            && matches!(self, Expression::NewExpression(_) | Expression::ImportExpression(_))
+            || matches!(self, Expression::NewExpression(_) | Expression::ImportExpression(_))
     }
 
     /// Returns `true` if this [`Expression`] is a [`BinaryExpression`] or [`LogicalExpression`].
@@ -369,6 +370,24 @@ impl<'a> Expression<'a> {
     /// Returns `true` if this is an [assignment expression](AssignmentExpression).
     pub fn is_assignment(&self) -> bool {
         matches!(self, Expression::AssignmentExpression(_))
+    }
+
+    /// Is identifier or `a.b` expression where `a` is an identifier.
+    pub fn is_entity_name_expression(&self) -> bool {
+        // Special case: treat `this.B` like `this` was an identifier
+        matches!(
+            self.without_parentheses(),
+            Expression::Identifier(_) | Expression::ThisExpression(_)
+        ) || self.is_property_access_entity_name_expression()
+    }
+
+    /// `a.b` expression where `a` is an identifier.
+    pub fn is_property_access_entity_name_expression(&self) -> bool {
+        if let Expression::StaticMemberExpression(e) = self {
+            e.object.is_entity_name_expression()
+        } else {
+            false
+        }
     }
 }
 
@@ -416,11 +435,20 @@ impl<'a> From<Argument<'a>> for ArrayExpressionElement<'a> {
     }
 }
 
-impl ObjectPropertyKind<'_> {
+impl<'a> ObjectPropertyKind<'a> {
     /// Returns `true` if this object property is a [spread](SpreadElement).
     #[inline]
     pub fn is_spread(&self) -> bool {
         matches!(self, Self::SpreadProperty(_))
+    }
+
+    /// Returns [`Some`] for non-spread [object properties](ObjectProperty).
+    #[inline]
+    pub fn as_property(&self) -> Option<&ObjectProperty<'a>> {
+        match self {
+            Self::ObjectProperty(prop) => Some(prop),
+            Self::SpreadProperty(_) => None,
+        }
     }
 }
 
@@ -439,11 +467,9 @@ impl<'a> PropertyKey<'a> {
             Self::StringLiteral(lit) => Some(Cow::Borrowed(lit.value.as_str())),
             Self::RegExpLiteral(lit) => Some(Cow::Owned(lit.regex.to_string())),
             Self::NumericLiteral(lit) => Some(Cow::Owned(lit.value.to_string())),
-            Self::BigIntLiteral(lit) => Some(Cow::Borrowed(lit.raw.as_str())),
+            Self::BigIntLiteral(lit) => Some(Cow::Borrowed(lit.value.as_str())),
             Self::NullLiteral(_) => Some(Cow::Borrowed("null")),
-            Self::TemplateLiteral(lit) => {
-                lit.expressions.is_empty().then(|| lit.quasi()).flatten().map(Into::into)
-            }
+            Self::TemplateLiteral(lit) => lit.single_quasi().map(Into::into),
             _ => None,
         }
     }
@@ -526,12 +552,12 @@ impl<'a> TemplateLiteral<'a> {
     /// - `` `foo` `` => `true`
     /// - `` `foo${bar}qux` `` => `false`
     pub fn is_no_substitution_template(&self) -> bool {
-        self.expressions.is_empty() && self.quasis.len() == 1
+        self.quasis.len() == 1
     }
 
     /// Get single quasi from `template`
-    pub fn quasi(&self) -> Option<Atom<'a>> {
-        self.quasis.first().and_then(|quasi| quasi.value.cooked)
+    pub fn single_quasi(&self) -> Option<Atom<'a>> {
+        if self.is_no_substitution_template() { self.quasis[0].value.cooked } else { None }
     }
 }
 
@@ -579,7 +605,7 @@ impl<'a> MemberExpression<'a> {
     /// - `a.b` would return `Some("b")`
     /// - `a["b"]` would return `Some("b")`
     /// - `a[b]` would return `None`
-    /// - `a.#b` would return `Some("b")`
+    /// - `a.#b` would return `None`
     pub fn static_property_name(&self) -> Option<&'a str> {
         match self {
             MemberExpression::ComputedMemberExpression(expr) => {
@@ -599,8 +625,8 @@ impl<'a> MemberExpression<'a> {
             MemberExpression::ComputedMemberExpression(expr) => match &expr.expression {
                 Expression::StringLiteral(lit) => Some((lit.span, lit.value.as_str())),
                 Expression::TemplateLiteral(lit) => {
-                    if lit.expressions.is_empty() && lit.quasis.len() == 1 {
-                        Some((lit.span, lit.quasis[0].value.raw.as_str()))
+                    if lit.quasis.len() == 1 {
+                        lit.quasis[0].value.cooked.map(|cooked| (lit.span, cooked.as_str()))
                     } else {
                         None
                     }
@@ -644,12 +670,22 @@ impl<'a> ComputedMemberExpression<'a> {
     pub fn static_property_name(&self) -> Option<Atom<'a>> {
         match &self.expression {
             Expression::StringLiteral(lit) => Some(lit.value),
-            Expression::TemplateLiteral(lit)
-                if lit.expressions.is_empty() && lit.quasis.len() == 1 =>
-            {
-                Some(lit.quasis[0].value.raw)
-            }
+            Expression::TemplateLiteral(lit) if lit.quasis.len() == 1 => lit.quasis[0].value.cooked,
             Expression::RegExpLiteral(lit) => lit.raw,
+            _ => None,
+        }
+    }
+
+    /// Returns the static property name of this member expression, if it has one, along with the source code [`Span`],
+    /// or `None` otherwise.
+    /// If you don't need the [`Span`], use [`ComputedMemberExpression::static_property_name`] instead.
+    pub fn static_property_info(&self) -> Option<(Span, &'a str)> {
+        match &self.expression {
+            Expression::StringLiteral(lit) => Some((lit.span, lit.value.as_str())),
+            Expression::TemplateLiteral(lit) if lit.quasis.len() == 1 => {
+                lit.quasis[0].value.cooked.map(|cooked| (lit.span, cooked.as_str()))
+            }
+            Expression::RegExpLiteral(lit) => lit.raw.map(|raw| (lit.span, raw.as_str())),
             _ => None,
         }
     }
@@ -677,6 +713,12 @@ impl<'a> StaticMemberExpression<'a> {
             return object;
         }
     }
+
+    /// Returns the static property name of this static member expression, if it has one, along with the source code [`Span`],
+    /// or `None` otherwise.
+    pub fn static_property_info(&self) -> (Span, &'a str) {
+        (self.property.span, self.property.name.as_str())
+    }
 }
 
 impl<'a> ChainElement<'a> {
@@ -688,6 +730,18 @@ impl<'a> ChainElement<'a> {
                 _ => None,
             },
             _ => self.as_member_expression(),
+        }
+    }
+}
+
+impl<'a> From<ChainElement<'a>> for Expression<'a> {
+    fn from(value: ChainElement<'a>) -> Self {
+        match value {
+            ChainElement::CallExpression(e) => Expression::CallExpression(e),
+            ChainElement::TSNonNullExpression(e) => Expression::TSNonNullExpression(e),
+            match_member_expression!(ChainElement) => {
+                Expression::from(value.into_member_expression())
+            }
         }
     }
 }
@@ -745,7 +799,7 @@ impl CallExpression<'_> {
     /// require() // => false
     /// require(123) // => false
     /// ```
-    pub fn common_js_require(&self) -> Option<&StringLiteral> {
+    pub fn common_js_require(&self) -> Option<&StringLiteral<'_>> {
         if !(self.callee.is_specific_id("require") && self.arguments.len() == 1) {
             return None;
         }
@@ -753,6 +807,50 @@ impl CallExpression<'_> {
             Argument::StringLiteral(str_literal) => Some(str_literal),
             _ => None,
         }
+    }
+
+    /// Returns the span covering **all** arguments in this call expression.
+    ///
+    /// The span starts at the beginning of the first argument and ends at the end
+    /// of the last argument (inclusive).
+    ///
+    /// # Examples
+    /// ```ts
+    /// foo(bar, baz);
+    /// //  ^^^^^^^^  <- arguments_span() covers this range
+    /// ```
+    ///
+    /// If the call expression has no arguments, [`None`] is returned.
+    pub fn arguments_span(&self) -> Option<Span> {
+        self.arguments.first().map(|first| {
+            // The below will never panic since the len of `self.arguments` must be >= 1
+            #[expect(clippy::missing_panics_doc)]
+            let last = self.arguments.last().unwrap();
+            Span::new(first.span().start, last.span().end)
+        })
+    }
+}
+
+impl NewExpression<'_> {
+    /// Returns the span covering **all** arguments in this new call expression.
+    ///
+    /// The span starts at the beginning of the first argument and ends at the end
+    /// of the last argument (inclusive).
+    ///
+    /// # Examples
+    /// ```ts
+    /// new Foo(bar, baz);
+    /// //      ^^^^^^^^  <- arguments_span() covers this range
+    /// ```
+    ///
+    /// If the new expression has no arguments, [`None`] is returned.
+    pub fn arguments_span(&self) -> Option<Span> {
+        self.arguments.first().map(|first| {
+            // The below will never panic since the len of `self.arguments` must be >= 1
+            #[expect(clippy::missing_panics_doc)]
+            let last = self.arguments.last().unwrap();
+            Span::new(first.span().start, last.span().end)
+        })
     }
 }
 
@@ -890,6 +988,21 @@ impl<'a> AssignmentTargetMaybeDefault<'a> {
             AssignmentTargetMaybeDefault::AssignmentTargetIdentifier(id) => Some(id),
             Self::AssignmentTargetWithDefault(target) => {
                 if let AssignmentTarget::AssignmentTargetIdentifier(id) = &target.binding {
+                    Some(id)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns mut identifier bound by this assignment target.
+    pub fn identifier_mut(&mut self) -> Option<&mut IdentifierReference<'a>> {
+        match self {
+            AssignmentTargetMaybeDefault::AssignmentTargetIdentifier(id) => Some(id),
+            Self::AssignmentTargetWithDefault(target) => {
+                if let AssignmentTarget::AssignmentTargetIdentifier(id) = &mut target.binding {
                     Some(id)
                 } else {
                     None
@@ -1066,6 +1179,11 @@ impl VariableDeclarationKind {
     /// Returns `true` if declared using `let`, `const` or `using` (such as `let x` or `const x`)
     pub fn is_lexical(self) -> bool {
         matches!(self, Self::Const | Self::Let | Self::Using | Self::AwaitUsing)
+    }
+
+    /// Returns `true` if declared with `using` (such as `using x` or `await using x`)
+    pub fn is_using(self) -> bool {
+        self == Self::Using || self == Self::AwaitUsing
     }
 
     /// Returns `true` if declared using `await using` (such as `await using x`)
@@ -1873,6 +1991,16 @@ impl<'a> ModuleExportName<'a> {
             Self::IdentifierReference(identifier) => Some(identifier.name),
             Self::StringLiteral(_) => None,
         }
+    }
+
+    /// Returns `true` if this module export name is an identifier, and not a string literal.
+    ///
+    /// ## Example
+    ///
+    /// - `export { foo }` => `true`
+    /// - `export { "foo" }` => `false`
+    pub fn is_identifier(&self) -> bool {
+        matches!(self, Self::IdentifierName(_) | Self::IdentifierReference(_))
     }
 }
 

@@ -80,10 +80,11 @@ impl<'a> IsolatedDeclarations<'a> {
     ///
     /// Returns `Vec<Error>` if any errors were collected during the transformation.
     pub fn build(mut self, program: &Program<'a>) -> IsolatedDeclarationsReturn<'a> {
-        self.internal_annotations = self
-            .strip_internal
-            .then(|| Self::build_internal_annotations(program))
-            .unwrap_or_default();
+        self.internal_annotations = if self.strip_internal {
+            Self::build_internal_annotations(program)
+        } else {
+            FxHashSet::default()
+        };
         let source_type = SourceType::d_ts();
         let directives = self.ast.vec();
         let stmts = self.transform_program(program);
@@ -400,6 +401,9 @@ impl<'a> IsolatedDeclarations<'a> {
                                 transformed_variable_declarator.remove(&declarator.span)
                             }),
                         );
+                        if declarations.is_empty() {
+                            continue;
+                        }
                         new_stmts.push(Statement::VariableDeclaration(
                             self.ast.alloc_variable_declaration(
                                 decl.span,
@@ -603,7 +607,7 @@ impl<'a> IsolatedDeclarations<'a> {
                 Statement::FunctionDeclaration(func) => {
                     if func.body.is_some() {
                         if let Some(name) = func.name() {
-                            if self.scope.has_reference(&name) {
+                            if self.scope.has_value_reference(&name) {
                                 can_expando_function_names.insert(name);
                             }
                         }
@@ -615,7 +619,7 @@ impl<'a> IsolatedDeclarations<'a> {
                             && declarator.init.as_ref().is_some_and(Expression::is_function)
                         {
                             if let Some(name) = declarator.id.get_identifier_name() {
-                                if self.scope.has_reference(&name) {
+                                if self.scope.has_value_reference(&name) {
                                     can_expando_function_names.insert(name);
                                 }
                             }

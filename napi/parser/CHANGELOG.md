@@ -2,7 +2,653 @@
 
 All notable changes to this package will be documented in this file.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0).
+
+
+
+
+
+
+
+
+
+
+
+## [0.82.3] - 2025-08-20
+
+### 🚜 Refactor
+
+- 5baa4f1 napi/parser: Fix lint errors (#13185) (overlookmotel)
+
+
+## [0.82.3] - 2025-08-20
+
+### 🚜 Refactor
+
+- 5baa4f1 napi/parser: Fix lint errors (#13185) (overlookmotel)
+
+
+## [0.82.2] - 2025-08-17
+
+### 🚜 Refactor
+
+- f6ac2e6 allocator, napi/parser: Use `usize::is_multiple_of` (#13142) (overlookmotel)
+
+### ⚡ Performance
+
+- ecc9c60 napi/parser: Raw transfer: reduce maths complexity (#13145) (overlookmotel)
+
+
+## [0.82.2] - 2025-08-17
+
+### 🚜 Refactor
+
+- f6ac2e6 allocator, napi/parser: Use `usize::is_multiple_of` (#13142) (overlookmotel)
+
+### ⚡ Performance
+
+- ecc9c60 napi/parser: Raw transfer: reduce maths complexity (#13145) (overlookmotel)
+
+
+
+
+## [0.82.0] - 2025-08-12
+
+### 🚜 Refactor
+
+- bf9ae3b ast/estree: Remove custom serializer for `TSImportTypeQualifier` (#12961) (overlookmotel)
+
+
+## [0.82.0] - 2025-08-12
+
+### 🚜 Refactor
+
+- bf9ae3b ast/estree: Remove custom serializer for `TSImportTypeQualifier` (#12961) (overlookmotel)
+
+
+## [0.81.0] - 2025-08-06
+
+### 💥 BREAKING CHANGES
+
+- 2cc1001 ast: [**BREAKING**] Remove `ExportDefaultDeclaration` `exported` field (#12808) (overlookmotel)
+- 50b91ac ast: [**BREAKING**] Remove `IdentifierReference` from `qualifier` field of `TSImportType` (#12799) (camc314)
+
+### 🐛 Bug Fixes
+
+- 47e2c59 estree: Fix serialization of `TSImportTypeQualifier` (#12801) (camc314)
+
+
+## [0.81.0] - 2025-08-06
+
+### 💥 BREAKING CHANGES
+
+- 2cc1001 ast: [**BREAKING**] Remove `ExportDefaultDeclaration` `exported` field (#12808) (overlookmotel)
+- 50b91ac ast: [**BREAKING**] Remove `IdentifierReference` from `qualifier` field of `TSImportType` (#12799) (camc314)
+
+### 🐛 Bug Fixes
+
+- 47e2c59 estree: Fix serialization of `TSImportTypeQualifier` (#12801) (camc314)
+
+
+## [0.80.0] - 2025-08-03
+
+### 💥 BREAKING CHANGES
+
+- cd93174 ast: [**BREAKING**] Introduce `WithClauseKeyword` (#12741) (overlookmotel)
+- 7332ae4 ast: [**BREAKING**] Box `rest` fields of `ArrayAssignmentTarget` and `ObjectAssignmentTarget` (#12698) (Copilot)
+
+### 🧪 Testing
+
+- 0ec214b napi: Compile tests in debug mode (#12750) (overlookmotel)
+- 2f255a0 napi/parser: Ensure `target` dir exists (#12751) (overlookmotel)
+- 02504b9 napi/parser: Disable raw transfer tests by default (#12742) (overlookmotel)
+
+
+## [0.80.0] - 2025-08-03
+
+### 💥 BREAKING CHANGES
+
+- cd93174 ast: [**BREAKING**] Introduce `WithClauseKeyword` (#12741) (overlookmotel)
+- 7332ae4 ast: [**BREAKING**] Box `rest` fields of `ArrayAssignmentTarget` and `ObjectAssignmentTarget` (#12698) (Copilot)
+
+### 🧪 Testing
+
+- 0ec214b napi: Compile tests in debug mode (#12750) (overlookmotel)
+- 2f255a0 napi/parser: Ensure `target` dir exists (#12751) (overlookmotel)
+- 02504b9 napi/parser: Disable raw transfer tests by default (#12742) (overlookmotel)
+
+
+
+
+## [0.79.0] - 2025-07-30
+
+### 🚜 Refactor
+
+- 8717807 napi/oxlint: Make `types.js` importable (#12581) (overlookmotel)
+- f0b1f0d napi/oxlint, napi/parser: Remove source length from `RawTransferMetadata` (#12483) (overlookmotel)
+
+### ⚡ Performance
+
+- 69f8b63 napi/parser, napi/oxlint: Lazy visit: faster check for exit visitor (#12496) (overlookmotel)
+
+
+## [0.79.0] - 2025-07-30
+
+### 🚜 Refactor
+
+- 8717807 napi/oxlint: Make `types.js` importable (#12581) (overlookmotel)
+- f0b1f0d napi/oxlint, napi/parser: Remove source length from `RawTransferMetadata` (#12483) (overlookmotel)
+
+### ⚡ Performance
+
+- 69f8b63 napi/parser, napi/oxlint: Lazy visit: faster check for exit visitor (#12496) (overlookmotel)
+
+
+
+
+## [0.77.3] - 2025-07-20
+
+### 🚀 Features
+
+- bc0fbe5 allocator: `AllocatorPool` store IDs in `Allocator`s (#12310) (overlookmotel)
+
+### 🚜 Refactor
+
+- c5dff1e linter, napi/parser: Add `source_len` field to `RawTransferMetadata` (#12383) (overlookmotel)
+- 5e3b415 linter: Duplicate `RawTransferMetadata` in `oxc_linter` crate (#12382) (overlookmotel)
+- 319fc3b allocator/fixed-size: Store `alloc_ptr` in the memory block backing the allocator (#12380) (overlookmotel)
+- 8fe1aec ast_tools, allocator, napi/parser: Rename vars (#12379) (overlookmotel)
+
+
+## [0.77.3] - 2025-07-20
+
+### 🚀 Features
+
+- bc0fbe5 allocator: `AllocatorPool` store IDs in `Allocator`s (#12310) (overlookmotel)
+
+### 🚜 Refactor
+
+- c5dff1e linter, napi/parser: Add `source_len` field to `RawTransferMetadata` (#12383) (overlookmotel)
+- 5e3b415 linter: Duplicate `RawTransferMetadata` in `oxc_linter` crate (#12382) (overlookmotel)
+- 319fc3b allocator/fixed-size: Store `alloc_ptr` in the memory block backing the allocator (#12380) (overlookmotel)
+- 8fe1aec ast_tools, allocator, napi/parser: Rename vars (#12379) (overlookmotel)
+
+
+## [0.77.2] - 2025-07-17
+
+### 🚜 Refactor
+
+- 4517624 napi/parser: Use `sourceByteLen` for UTF8 source length (#12365) (overlookmotel)
+
+
+## [0.77.2] - 2025-07-17
+
+### 🚜 Refactor
+
+- 4517624 napi/parser: Use `sourceByteLen` for UTF8 source length (#12365) (overlookmotel)
+
+
+## [0.77.1] - 2025-07-16
+
+### 🚀 Features
+
+- 9b14fbc ast: Add `ThisExpression` to `TSTypeName` (#12156) (Boshen)
+
+### 🚜 Refactor
+
+- a2da682 napi/parser: Clarify pointer maths (#12300) (overlookmotel)
+- 2f9bd11 allocator: Fixed size allocator leave space for metadata after arena (#12278) (overlookmotel)
+- 5fba91c napi/parser: Raw transfer: introduce metadata struct (#12269) (overlookmotel)
+- 39ef911 napi/parser, allocator: Raw transfer: store buffer size and align as consts (#12275) (overlookmotel)
+- d009bdb napi/parser: Raw transfer: store offsets as consts (#12268) (overlookmotel)
+- 43f61ed napi/parser: Correct comment about raw transfer buffer size (#12273) (overlookmotel)
+- 28ed99b napi/parser: Do not compile raw transfer code on WASM (#12271) (overlookmotel)
+
+### ⚡ Performance
+
+- cc1e9fc napi/parser: Raw transfer: reduce size of buffer by 16 bytes (#12277) (overlookmotel)
+- 28be5de napi/parser: Raw transfer: move check for supported platform (#12274) (overlookmotel)
+
+
+## [0.77.1] - 2025-07-16
+
+### 🚀 Features
+
+- 9b14fbc ast: Add `ThisExpression` to `TSTypeName` (#12156) (Boshen)
+
+### 🚜 Refactor
+
+- a2da682 napi/parser: Clarify pointer maths (#12300) (overlookmotel)
+- 2f9bd11 allocator: Fixed size allocator leave space for metadata after arena (#12278) (overlookmotel)
+- 5fba91c napi/parser: Raw transfer: introduce metadata struct (#12269) (overlookmotel)
+- 39ef911 napi/parser, allocator: Raw transfer: store buffer size and align as consts (#12275) (overlookmotel)
+- d009bdb napi/parser: Raw transfer: store offsets as consts (#12268) (overlookmotel)
+- 43f61ed napi/parser: Correct comment about raw transfer buffer size (#12273) (overlookmotel)
+- 28ed99b napi/parser: Do not compile raw transfer code on WASM (#12271) (overlookmotel)
+
+### ⚡ Performance
+
+- cc1e9fc napi/parser: Raw transfer: reduce size of buffer by 16 bytes (#12277) (overlookmotel)
+- 28be5de napi/parser: Raw transfer: move check for supported platform (#12274) (overlookmotel)
+
+
+## [0.77.0] - 2025-07-12
+
+### 🚀 Features
+
+- 407429a napi/parser,napi/transform: Accept `lang=dts` (#12154) (Boshen)
+
+### 🚜 Refactor
+
+- baa3726 tests/napi: Add `build-test` script for tests (#12132) (camc314)
+
+### ⚡ Performance
+
+- 4c35f4a napi/parser: Optimize raw transfer deserializer for `TSClassImplements` (#12158) (overlookmotel)
+
+
+## [0.77.0] - 2025-07-12
+
+### 🚀 Features
+
+- 407429a napi/parser,napi/transform: Accept `lang=dts` (#12154) (Boshen)
+
+### 🚜 Refactor
+
+- baa3726 tests/napi: Add `build-test` script for tests (#12132) (camc314)
+
+### ⚡ Performance
+
+- 4c35f4a napi/parser: Optimize raw transfer deserializer for `TSClassImplements` (#12158) (overlookmotel)
+
+
+## [0.76.0] - 2025-07-08
+
+### 🐛 Bug Fixes
+
+- a490e00 napi/parser: Lazy visit: correct error messages (#12109) (overlookmotel)
+
+### 🚜 Refactor
+
+- c5e8d90 napi/parser: Lazy deser: `constructors.js` export static object (#12090) (overlookmotel)
+- fe35285 napi/parser: Lazy deser: remove `construct` function (#12089) (overlookmotel)
+- 9ae0815 napi/parser: Move files (#12088) (overlookmotel)
+
+
+## [0.76.0] - 2025-07-08
+
+### 🐛 Bug Fixes
+
+- a490e00 napi/parser: Lazy visit: correct error messages (#12109) (overlookmotel)
+
+### 🚜 Refactor
+
+- c5e8d90 napi/parser: Lazy deser: `constructors.js` export static object (#12090) (overlookmotel)
+- fe35285 napi/parser: Lazy deser: remove `construct` function (#12089) (overlookmotel)
+- 9ae0815 napi/parser: Move files (#12088) (overlookmotel)
+
+
+## [0.75.1] - 2025-07-03
+
+### 🐛 Bug Fixes
+
+- a3641d2 napi/parser: Remove non-existent methods from TS type defs (#12054) (overlookmotel)
+
+### 🚜 Refactor
+
+- 016634f ast/estree: Introduce `serialize_span` method (#12013) (overlookmotel)
+- 754f01d ast/estree: Move `start` and `end` fields to last (#12012) (overlookmotel)
+- 4597311 ast/estree: Remove temp vars for `ranges` from serializer (#12007) (overlookmotel)
+
+### 📚 Documentation
+
+- 4a408c3 napi/parser: Document options (#12008) (overlookmotel)
+
+
+## [0.75.1] - 2025-07-03
+
+### 🐛 Bug Fixes
+
+- a3641d2 napi/parser: Remove non-existent methods from TS type defs (#12054) (overlookmotel)
+
+### 🚜 Refactor
+
+- 016634f ast/estree: Introduce `serialize_span` method (#12013) (overlookmotel)
+- 754f01d ast/estree: Move `start` and `end` fields to last (#12012) (overlookmotel)
+- 4597311 ast/estree: Remove temp vars for `ranges` from serializer (#12007) (overlookmotel)
+
+### 📚 Documentation
+
+- 4a408c3 napi/parser: Document options (#12008) (overlookmotel)
+
+
+## [0.75.0] - 2025-06-25
+
+### 💥 BREAKING CHANGES
+
+- 9a2548a napi/parser: [**BREAKING**] Add `range` option (#11728) (Bacary Bruno Bodian)
+
+### 🐛 Bug Fixes
+
+- cf0e18a napi/parser: `NodeArray` allow setting large integer properties (#11883) (overlookmotel)
+
+### 🚜 Refactor
+
+- 0bf7815 napi/parser: Lazy visitor: pre-calculate count of node types (#11861) (overlookmotel)
+
+### ⚡ Performance
+
+- 84fa006 napi/parser: Lazy deser: faster construction of `NodeArray` iterators (#11870) (overlookmotel)
+- fb02e6c napi/parser: Lazy deser: speed up creating `NodeArray`s (#11869) (overlookmotel)
+- 58dfff8 napi/parser: Raw deser: remove `WeakMap` from `NodeArray` (#11868) (overlookmotel)
+- 6c5ee78 napi/parser: Lazy visit: cheaper for loop (#11864) (overlookmotel)
+
+### 🧪 Testing
+
+- 54f9464 napi/parser: Add benchmarks for lazy visit alone (#11866) (overlookmotel)
+- 97b671f napi/parser: Load internal modules with `require` in benchmarks (#11865) (overlookmotel)
+
+
+## [0.75.0] - 2025-06-25
+
+### 💥 BREAKING CHANGES
+
+- 9a2548a napi/parser: [**BREAKING**] Add `range` option (#11728) (Bacary Bruno Bodian)
+
+### 🐛 Bug Fixes
+
+- cf0e18a napi/parser: `NodeArray` allow setting large integer properties (#11883) (overlookmotel)
+
+### 🚜 Refactor
+
+- 0bf7815 napi/parser: Lazy visitor: pre-calculate count of node types (#11861) (overlookmotel)
+
+### ⚡ Performance
+
+- 84fa006 napi/parser: Lazy deser: faster construction of `NodeArray` iterators (#11870) (overlookmotel)
+- fb02e6c napi/parser: Lazy deser: speed up creating `NodeArray`s (#11869) (overlookmotel)
+- 58dfff8 napi/parser: Raw deser: remove `WeakMap` from `NodeArray` (#11868) (overlookmotel)
+- 6c5ee78 napi/parser: Lazy visit: cheaper for loop (#11864) (overlookmotel)
+
+### 🧪 Testing
+
+- 54f9464 napi/parser: Add benchmarks for lazy visit alone (#11866) (overlookmotel)
+- 97b671f napi/parser: Load internal modules with `require` in benchmarks (#11865) (overlookmotel)
+
+
+## [0.74.0] - 2025-06-23
+
+### 🚀 Features
+
+- 93069a5 napi/parser: Add experimental lazy visitor (#11837) (overlookmotel)
+
+### 🚜 Refactor
+
+- 0260308 ast_tools: Prepare lazy deserializer codegen for visitor (#11836) (overlookmotel)
+- b544be8 napi/parser: Remove options amendment from `prepareRaw` (#11828) (overlookmotel)
+- 9c960cd napi/parser: Re-order code (#11813) (overlookmotel)
+- bfed7f2 napi/parser: Rename file (#11808) (overlookmotel)
+- 08e666f ast/estree: Add `#[estree]` attrs to `RegExpFlagsAlias` (#11794) (overlookmotel)
+
+### 📚 Documentation
+
+- 4dc8a4e napi/parser: Add JSDoc comments to all functions (#11814) (overlookmotel)
+
+### ⚡ Performance
+
+- 6bbe048 napi/parser: Do not lazily create `TextEncoder` (#11817) (overlookmotel)
+- aef1770 napi/parser: Destructure `bindings` on import (#11811) (overlookmotel)
+- 3a0a673 napi/parser: Lazy-load raw transfer and lazy deser code (#11807) (overlookmotel)
+
+
+## [0.74.0] - 2025-06-23
+
+### 🚀 Features
+
+- 93069a5 napi/parser: Add experimental lazy visitor (#11837) (overlookmotel)
+
+### 🚜 Refactor
+
+- 0260308 ast_tools: Prepare lazy deserializer codegen for visitor (#11836) (overlookmotel)
+- b544be8 napi/parser: Remove options amendment from `prepareRaw` (#11828) (overlookmotel)
+- 9c960cd napi/parser: Re-order code (#11813) (overlookmotel)
+- bfed7f2 napi/parser: Rename file (#11808) (overlookmotel)
+- 08e666f ast/estree: Add `#[estree]` attrs to `RegExpFlagsAlias` (#11794) (overlookmotel)
+
+### 📚 Documentation
+
+- 4dc8a4e napi/parser: Add JSDoc comments to all functions (#11814) (overlookmotel)
+
+### ⚡ Performance
+
+- 6bbe048 napi/parser: Do not lazily create `TextEncoder` (#11817) (overlookmotel)
+- aef1770 napi/parser: Destructure `bindings` on import (#11811) (overlookmotel)
+- 3a0a673 napi/parser: Lazy-load raw transfer and lazy deser code (#11807) (overlookmotel)
+
+
+## [0.73.2] - 2025-06-18
+
+### 🐛 Bug Fixes
+
+- a47a6de napi/parser: Lazy deser: do not expose `getElement` method from `NodeArray` (#11777) (overlookmotel)
+
+### ⚡ Performance
+
+- 21c8852 napi/parser: Faster deserialization of `Vec`s in raw transfer (#11776) (overlookmotel)
+
+
+## [0.73.2] - 2025-06-18
+
+### 🐛 Bug Fixes
+
+- a47a6de napi/parser: Lazy deser: do not expose `getElement` method from `NodeArray` (#11777) (overlookmotel)
+
+### ⚡ Performance
+
+- 21c8852 napi/parser: Faster deserialization of `Vec`s in raw transfer (#11776) (overlookmotel)
+
+
+## [0.73.1] - 2025-06-17
+
+### 🚀 Features
+
+- 81ef443 napi: Add `aarch64-linux-android` target (#11769) (LongYinan)
+- dfdebc2 napi/parser: Lazy deserializer `NodeArray` `slice` method (#11680) (overlookmotel)
+
+### 🐛 Bug Fixes
+
+- 6feab7e ast/estree: Remove custom serializer for `MethodDefinition` `key` field (#11763) (overlookmotel)
+- fcb3084 napi/parser: Lazy deser: remove outdated comments (#11699) (overlookmotel)
+- 2749931 napi/parser: Lazy deserializer block class constructors correctly (#11679) (overlookmotel)
+- e523d86 napi/parser: Lazy deserializer locally cache all `Vec`s and strings (#11667) (overlookmotel)
+
+### 🚜 Refactor
+
+- d057652 regular-expression: Shorten Span construction (#11689) (Ulrich Stark)
+- f1f3c30 napi/parser: Lazy deserializer: prefix local cache property keys with `$` (#11673) (overlookmotel)
+
+### ⚡ Performance
+
+- d136acd napi/parser: Lazy deser: remove `getInternal` function in `NodeArray` (#11698) (overlookmotel)
+- a6a82f9 napi/parser: Lazy deser: avoid changing shape of `NodeArray` prototype (#11697) (overlookmotel)
+- 60f754e napi/parser: Lazily deserialize `Vec`s (#11678) (overlookmotel)
+
+### 🧪 Testing
+
+- 20efcd4 napi/parser: Remove unnecessary `RUN_SIMPLE_LAZY_TESTS` env var (#11703) (overlookmotel)
+- 6848b24 napi/parser: Lazy deser: tests for introspection of `NodeArray`s (#11702) (overlookmotel)
+
+
+## [0.73.1] - 2025-06-17
+
+### 🚀 Features
+
+- 81ef443 napi: Add `aarch64-linux-android` target (#11769) (LongYinan)
+- dfdebc2 napi/parser: Lazy deserializer `NodeArray` `slice` method (#11680) (overlookmotel)
+
+### 🐛 Bug Fixes
+
+- 6feab7e ast/estree: Remove custom serializer for `MethodDefinition` `key` field (#11763) (overlookmotel)
+- fcb3084 napi/parser: Lazy deser: remove outdated comments (#11699) (overlookmotel)
+- 2749931 napi/parser: Lazy deserializer block class constructors correctly (#11679) (overlookmotel)
+- e523d86 napi/parser: Lazy deserializer locally cache all `Vec`s and strings (#11667) (overlookmotel)
+
+### 🚜 Refactor
+
+- d057652 regular-expression: Shorten Span construction (#11689) (Ulrich Stark)
+- f1f3c30 napi/parser: Lazy deserializer: prefix local cache property keys with `$` (#11673) (overlookmotel)
+
+### ⚡ Performance
+
+- d136acd napi/parser: Lazy deser: remove `getInternal` function in `NodeArray` (#11698) (overlookmotel)
+- a6a82f9 napi/parser: Lazy deser: avoid changing shape of `NodeArray` prototype (#11697) (overlookmotel)
+- 60f754e napi/parser: Lazily deserialize `Vec`s (#11678) (overlookmotel)
+
+### 🧪 Testing
+
+- 20efcd4 napi/parser: Remove unnecessary `RUN_SIMPLE_LAZY_TESTS` env var (#11703) (overlookmotel)
+- 6848b24 napi/parser: Lazy deser: tests for introspection of `NodeArray`s (#11702) (overlookmotel)
+
+
+## [0.73.0] - 2025-06-13
+
+### 💥 BREAKING CHANGES
+
+- f3eaefb ast: [**BREAKING**] Add `value` field to `BigIntLiteral` (#11564) (overlookmotel)
+
+### 🚀 Features
+
+- 5860195 napi/parser: Improved `console.log` output for lazy deserialized AST (#11642) (overlookmotel)
+- 5a55a58 napi/parser: Add lazy deserialization (#11595) (overlookmotel)
+- 120b00f napi/parser: Support old versions of NodeJS (#11596) (overlookmotel)
+
+### 🐛 Bug Fixes
+
+- 931fc73 napi/parser: Cache nodes in lazy deserialization (#11637) (overlookmotel)
+
+### 🚜 Refactor
+
+- ff7111c napi/parser: Use "construct" instead of "deserialize" in lazy deserializer (#11616) (overlookmotel)
+- 95ee174 napi/parser: Move raw transfer code into separate directory (#11583) (overlookmotel)
+- 8e74e05 ast/estree: Remove dead code from generated raw transfer deserializer (#11579) (overlookmotel)
+
+### ⚡ Performance
+
+- 5271951 napi/parser: Remove function calls from lazy deserialization (#11615) (overlookmotel)
+- 7c66637 napi/parser: Re-use `TypedArray` objects in raw transfer (#11585) (overlookmotel)
+
+### 🧪 Testing
+
+- 8cab72f napi/parser: Env var to run lazy deserialization tests (#11636) (overlookmotel)
+- 8ad3061 napi/parser: Run raw transfer tests on multiple threads (#11611) (overlookmotel)
+- c0027e0 ast/estree: Benchmark raw transfer deserialization in isolation (#11584) (overlookmotel)
+
+
+## [0.73.0] - 2025-06-13
+
+### 💥 BREAKING CHANGES
+
+- f3eaefb ast: [**BREAKING**] Add `value` field to `BigIntLiteral` (#11564) (overlookmotel)
+
+### 🚀 Features
+
+- 5860195 napi/parser: Improved `console.log` output for lazy deserialized AST (#11642) (overlookmotel)
+- 5a55a58 napi/parser: Add lazy deserialization (#11595) (overlookmotel)
+- 120b00f napi/parser: Support old versions of NodeJS (#11596) (overlookmotel)
+
+### 🐛 Bug Fixes
+
+- 931fc73 napi/parser: Cache nodes in lazy deserialization (#11637) (overlookmotel)
+
+### 🚜 Refactor
+
+- ff7111c napi/parser: Use "construct" instead of "deserialize" in lazy deserializer (#11616) (overlookmotel)
+- 95ee174 napi/parser: Move raw transfer code into separate directory (#11583) (overlookmotel)
+- 8e74e05 ast/estree: Remove dead code from generated raw transfer deserializer (#11579) (overlookmotel)
+
+### ⚡ Performance
+
+- 5271951 napi/parser: Remove function calls from lazy deserialization (#11615) (overlookmotel)
+- 7c66637 napi/parser: Re-use `TypedArray` objects in raw transfer (#11585) (overlookmotel)
+
+### 🧪 Testing
+
+- 8cab72f napi/parser: Env var to run lazy deserialization tests (#11636) (overlookmotel)
+- 8ad3061 napi/parser: Run raw transfer tests on multiple threads (#11611) (overlookmotel)
+- c0027e0 ast/estree: Benchmark raw transfer deserialization in isolation (#11584) (overlookmotel)
+
+
+# Changelog
+
+All notable changes to this package will be documented in this file.
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project does not adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) until v1.0.0.
+
+## [0.72.3] - 2025-06-06
+
+### Bug Fixes
+
+- 8451bee ast/estree: Remove repeat fields from `BindingPattern` in TS-ESTree AST (#11500) (overlookmotel)
+- 5c32b7c ast/estree: Make error objects via raw transfer match standard transfer (#11481) (overlookmotel)
+- 953e61b ast/estree: Fix field order of `PropertyKey` constructor in raw transfer TS-ESTree AST (#11463) (overlookmotel)
+- ec4fc83 estree: Use consistent field order in serialization (#11385) (Yuji Sugiura)
+- ab0dd29 napi: Napi build cache problem (#11479) (LongYinan)
+
+### Testing
+
+- 97aa9cc ast/estree: Remove test skip list for TS raw transfer tests (#11478) (overlookmotel)
+- 75e241c ast/estree: Test raw transfer on TS-ESTree (#11476) (overlookmotel)
+
+## [0.72.3] - 2025-06-06
+
+### Bug Fixes
+
+- 8451bee ast/estree: Remove repeat fields from `BindingPattern` in TS-ESTree AST (#11500) (overlookmotel)
+- 5c32b7c ast/estree: Make error objects via raw transfer match standard transfer (#11481) (overlookmotel)
+- 953e61b ast/estree: Fix field order of `PropertyKey` constructor in raw transfer TS-ESTree AST (#11463) (overlookmotel)
+- ec4fc83 estree: Use consistent field order in serialization (#11385) (Yuji Sugiura)
+- ab0dd29 napi: Napi build cache problem (#11479) (LongYinan)
+
+### Testing
+
+- 97aa9cc ast/estree: Remove test skip list for TS raw transfer tests (#11478) (overlookmotel)
+- 75e241c ast/estree: Test raw transfer on TS-ESTree (#11476) (overlookmotel)
+
+## [0.72.2] - 2025-05-31
+
+### Features
+
+- 1df6732 ast/estree: Add decorators to ESTree AST (#11393) (overlookmotel)
+
+### Refactor
+
+- 12690a1 ast/estree: Re-order fields in visitation order (#11362) (overlookmotel)
+- 75ee3a5 ast/estree: Do not put TS struct fields last (#11360) (overlookmotel)
+- 1d1ebd6 ast_tools/estree: Order `type` and `span` fields first by default (#11361) (overlookmotel)
+
+## [0.72.2] - 2025-05-31
+
+### Features
+
+- 1df6732 ast/estree: Add decorators to ESTree AST (#11393) (overlookmotel)
+
+### Refactor
+
+- 12690a1 ast/estree: Re-order fields in visitation order (#11362) (overlookmotel)
+- 75ee3a5 ast/estree: Do not put TS struct fields last (#11360) (overlookmotel)
+- 1d1ebd6 ast_tools/estree: Order `type` and `span` fields first by default (#11361) (overlookmotel)
+
+## [0.72.1] - 2025-05-28
+
+### Features
+
+- b8aa4e3 napi/parser: `parseAsync` support raw transfer (#11335) (overlookmotel)
+
+## [0.72.1] - 2025-05-28
+
+### Features
+
+- b8aa4e3 napi/parser: `parseAsync` support raw transfer (#11335) (overlookmotel)
 
 ## [0.72.0] - 2025-05-24
 

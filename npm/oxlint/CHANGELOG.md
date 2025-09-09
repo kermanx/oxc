@@ -2,7 +2,87 @@
 
 All notable changes to this package will be documented in this file.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0).
+
+## [1.14.0] - 2025-08-30
+
+### 🚀 Features
+
+- 7fc4aef npm/oxlint: 'oxlint-tsgolint': '>=0.1.4' (Boshen)
+
+
+## [1.13.0] - 2025-08-26
+
+### 🐛 Bug Fixes
+
+- 02c779f npm/oxlint: Make `oxlint-tsgolint` truly optional (#13153) (Boshen)
+
+
+
+
+## [1.11.1] - 2025-08-09
+
+### 🐛 Bug Fixes
+
+- 8c57153 npm/oxlint: Fix `oxlint-tsgolint` version range for yarn (Boshen)
+
+### 🚜 Refactor
+
+- 238b183 linter: Use `fast-glob` instead of `globset` for `GlobSet` (#12870) (shulaoda)
+
+
+## [1.11.0] - 2025-08-07
+
+### 🚀 Features
+
+- ac46347 oxlint: Add `tsgolint` integration (#12485) (camchenry)
+
+
+## [1.10.0] - 2025-08-06
+
+### 🚀 Features
+
+- 9b35600 linter/jsx-a11y: Add support for mapped attributes in label association checks (#12805) (camc314)
+
+
+## [1.9.0] - 2025-07-29
+
+### 🚜 Refactor
+
+- bea652f linter: Add `vue` and `regex` to `BuiltinLintPlugins` (#12542) (Sysix)
+
+
+
+## [1.7.0] - 2025-07-16
+
+### 🚀 Features
+
+- a4dae73 linter: Introduce `LintPlugins` to store builtin + custom plugins (#12117) (camc314)
+
+
+
+
+
+
+
+
+
+
+# Changelog
+
+All notable changes to this package will be documented in this file.
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project does not adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) until v1.0.0.
+
+## [0.16.12] - 2025-05-25
+
+### Features
+
+- 6a7018e linter: Generate stricter json schema for lint plugins (#11219) (camc314)
+
+### Bug Fixes
+
+- e8470d9 linter: Delay merging of oxlintrc configs (#10835) (camc314)
 
 ## [0.15.14] - 2025-03-11
 

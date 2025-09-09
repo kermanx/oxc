@@ -16,11 +16,11 @@ use crate::{
     AllowWarnDeny, FrameworkFlags, ModuleRecord, OxlintEnv, OxlintGlobals, OxlintSettings,
     config::GlobalValue,
     disable_directives::DisableDirectives,
-    fixer::{FixKind, Message, RuleFix, RuleFixer},
+    fixer::{Fix, FixKind, Message, PossibleFixes, RuleFix, RuleFixer},
 };
 
 mod host;
-pub use host::ContextHost;
+pub use host::{ContextHost, ContextSubHost};
 
 /// Contains all of the state and context specific to this lint rule.
 ///
@@ -105,8 +105,8 @@ impl<'a> LintContext<'a> {
     ///
     /// Refer to [`Semantic`]'s documentation for more information.
     #[inline]
-    pub fn semantic(&self) -> &Rc<Semantic<'a>> {
-        &self.parent.semantic
+    pub fn semantic(&self) -> &Semantic<'a> {
+        self.parent.semantic()
     }
 
     #[inline]
@@ -119,19 +119,19 @@ impl<'a> LintContext<'a> {
     pub fn cfg(&self) -> &ControlFlowGraph {
         // SAFETY: `LintContext::new` is the only way to construct a `LintContext` and we always
         // assert the existence of control flow so it should always be `Some`.
-        unsafe { self.parent.semantic.cfg().unwrap_unchecked() }
+        unsafe { self.parent.semantic().cfg().unwrap_unchecked() }
     }
 
     /// List of all disable directives in the file being linted.
     #[inline]
-    pub fn disable_directives(&self) -> &DisableDirectives<'a> {
-        &self.parent.disable_directives
+    pub fn disable_directives(&self) -> &Rc<DisableDirectives<'a>> {
+        self.parent.disable_directives()
     }
 
     /// Get a snippet of source text covered by the given [`Span`]. For details,
     /// see [`Span::source_text`].
     pub fn source_range(&self, span: Span) -> &'a str {
-        span.source_text(self.parent.semantic.source_text())
+        span.source_text(self.parent.semantic().source_text())
     }
 
     /// Path to the file currently being linted.
@@ -222,7 +222,7 @@ impl<'a> LintContext<'a> {
     /// Add a diagnostic message to the list of diagnostics. Outputs a diagnostic with the current rule
     /// name, severity, and a link to the rule's documentation URL.
     fn add_diagnostic(&self, mut message: Message<'a>) {
-        if self.parent.disable_directives.contains(self.current_rule_name, message.span()) {
+        if self.parent.disable_directives().contains(self.current_rule_name, message.span()) {
             return;
         }
         message.error = message
@@ -246,7 +246,7 @@ impl<'a> LintContext<'a> {
     /// Use [`LintContext::diagnostic_with_fix`] to provide an automatic fix.
     #[inline]
     pub fn diagnostic(&self, diagnostic: OxcDiagnostic) {
-        self.add_diagnostic(Message::new(diagnostic, None));
+        self.add_diagnostic(Message::new(diagnostic, PossibleFixes::None));
     }
 
     /// Report a lint rule violation and provide an automatic fix.
@@ -291,6 +291,27 @@ impl<'a> LintContext<'a> {
         self.diagnostic_with_fix_of_kind(diagnostic, FixKind::Suggestion, fix);
     }
 
+    /// Report a lint rule violation and provide a suggestion for fixing it.
+    ///
+    /// The second argument is a [closure] that takes a [`RuleFixer`] and
+    /// returns something that can turn into a `CompositeFix`.
+    ///
+    /// Fixes created this way should not create parse errors, but have the
+    /// potential to change the code's semantics. If your fix is completely safe
+    /// and definitely does not change semantics, use [`LintContext::diagnostic_with_fix`].
+    /// If your fix has the potential to create parse errors, use
+    /// [`LintContext::diagnostic_with_dangerous_fix`].
+    ///
+    /// [closure]: <https://doc.rust-lang.org/book/ch13-01-closures.html>
+    #[inline]
+    pub fn diagnostic_with_dangerous_suggestion<C, F>(&self, diagnostic: OxcDiagnostic, fix: F)
+    where
+        C: Into<RuleFix<'a>>,
+        F: FnOnce(RuleFixer<'_, 'a>) -> C,
+    {
+        self.diagnostic_with_fix_of_kind(diagnostic, FixKind::DangerousSuggestion, fix);
+    }
+
     /// Report a lint rule violation and provide a potentially dangerous
     /// automatic fix for it.
     ///
@@ -325,7 +346,6 @@ impl<'a> LintContext<'a> {
     /// returns something that can turn into a [`RuleFix`].
     ///
     /// [closure]: <https://doc.rust-lang.org/book/ch13-01-closures.html>
-    #[cfg_attr(debug_assertions, expect(clippy::missing_panics_doc))] // Only panics in debug mode
     pub fn diagnostic_with_fix_of_kind<C, F>(
         &self,
         diagnostic: OxcDiagnostic,
@@ -335,28 +355,73 @@ impl<'a> LintContext<'a> {
         C: Into<RuleFix<'a>>,
         F: FnOnce(RuleFixer<'_, 'a>) -> C,
     {
+        let (diagnostic, fix) = self.create_fix(fix_kind, fix, diagnostic);
+        if let Some(fix) = fix {
+            self.add_diagnostic(Message::new(diagnostic, PossibleFixes::Single(fix)));
+        } else {
+            self.diagnostic(diagnostic);
+        }
+    }
+
+    /// Report a lint rule violation and provide an automatic fix of a specific kind.
+    /// This method is used when the rule can provide multiple fixes for the same diagnostic.
+    pub fn diagnostics_with_multiple_fixes<C, F1, F2>(
+        &self,
+        diagnostic: OxcDiagnostic,
+        fix_one: (FixKind, F1),
+        fix_two: (FixKind, F2),
+    ) where
+        C: Into<RuleFix<'a>>,
+        F1: FnOnce(RuleFixer<'_, 'a>) -> C,
+        F2: FnOnce(RuleFixer<'_, 'a>) -> C,
+    {
+        let fixes_result: Vec<Fix<'a>> = vec![
+            self.create_fix(fix_one.0, fix_one.1, diagnostic.clone()).1,
+            self.create_fix(fix_two.0, fix_two.1, diagnostic.clone()).1,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        if fixes_result.is_empty() {
+            self.diagnostic(diagnostic);
+        } else {
+            self.add_diagnostic(Message::new(diagnostic, PossibleFixes::Multiple(fixes_result)));
+        }
+    }
+
+    fn create_fix<C, F>(
+        &self,
+        fix_kind: FixKind,
+        fix: F,
+        diagnostic: OxcDiagnostic,
+    ) -> (OxcDiagnostic, Option<Fix<'a>>)
+    where
+        C: Into<RuleFix<'a>>,
+        F: FnOnce(RuleFixer<'_, 'a>) -> C,
+    {
         let fixer = RuleFixer::new(fix_kind, self);
         let rule_fix: RuleFix<'a> = fix(fixer).into();
         #[cfg(debug_assertions)]
-        {
-            assert!(
-                self.current_rule_fix_capabilities.supports_fix(fix_kind),
-                "Rule `{}` does not support safe fixes. Did you forget to update fix capabilities in declare_oxc_lint?.\n\tSupported fix kinds: {:?}\n\tAttempted fix kind: {:?}",
-                self.current_rule_name,
-                FixKind::from(self.current_rule_fix_capabilities),
-                rule_fix.kind()
-            );
-        }
+        debug_assert!(
+            self.current_rule_fix_capabilities.supports_fix(fix_kind),
+            "Rule `{}` does not support safe fixes. Did you forget to update fix capabilities in declare_oxc_lint?.\n\tSupported fix kinds: {:?}\n\tAttempted fix kind: {:?}",
+            self.current_rule_name,
+            FixKind::from(self.current_rule_fix_capabilities),
+            rule_fix.kind()
+        );
+
         let diagnostic = match (rule_fix.message(), &diagnostic.help) {
             (Some(message), None) => diagnostic.with_help(message.to_owned()),
             _ => diagnostic,
         };
+
         if self.parent.fix.can_apply(rule_fix.kind()) && !rule_fix.is_empty() {
             let fix = rule_fix.into_fix(self.source_text());
             #[cfg(debug_assertions)]
             {
                 if fix.span.size() > 1 {
-                    assert!(
+                    debug_assert!(
                         fix.message.as_ref().is_some_and(|msg| !msg.is_empty()),
                         "Rule `{}/{}` fix should have a message for a complex fix. Did you forget to add a message?\n   Source text: {:?}\n    Fixed text: {:?}\nhelp: You can add a message to a fix with `RuleFix.with_message()`",
                         self.current_plugin_name,
@@ -366,15 +431,20 @@ impl<'a> LintContext<'a> {
                     );
                 }
             }
-            self.add_diagnostic(Message::new(diagnostic, Some(fix)));
+
+            (diagnostic, Some(fix))
         } else {
-            self.diagnostic(diagnostic);
+            (diagnostic, None)
         }
     }
 
     /// Framework flags, indicating front-end frameworks that might be in use.
     pub fn frameworks(&self) -> FrameworkFlags {
         self.parent.frameworks
+    }
+
+    pub fn other_file_hosts(&self) -> Vec<&ContextSubHost<'a>> {
+        self.parent.other_file_hosts()
     }
 }
 
@@ -404,4 +474,6 @@ const PLUGIN_PREFIXES: phf::Map<&'static str, &'static str> = phf::phf_map! {
     "unicorn" => "eslint-plugin-unicorn",
     "vitest" => "eslint-plugin-vitest",
     "node" => "eslint-plugin-node",
+    "vue" => "eslint-plugin-vue",
+    "regexp" => "eslint-plugin-regexp",
 };

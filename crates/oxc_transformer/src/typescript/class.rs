@@ -2,10 +2,13 @@ use oxc_allocator::{TakeIn, Vec as ArenaVec};
 use oxc_ast::ast::*;
 use oxc_semantic::ScopeFlags;
 use oxc_span::SPAN;
-use oxc_traverse::{BoundIdentifier, TraverseCtx};
+use oxc_traverse::BoundIdentifier;
 
-use crate::utils::ast_builder::{
-    create_class_constructor, create_this_property_access, create_this_property_assignment,
+use crate::{
+    context::TraverseCtx,
+    utils::ast_builder::{
+        create_class_constructor, create_this_property_access, create_this_property_assignment,
+    },
 };
 
 use super::TypeScript;
@@ -26,8 +29,8 @@ impl<'a> TypeScript<'a, '_> {
     /// 2. Convert class fields to `this` assignments in the constructor body.
     ///
     /// > This transformation only works when `set_public_class_fields` is `true`,
-    ///   and the fields have initializers, which is to align with the behavior of TypeScript's
-    ///   `useDefineForClassFields: false` option.
+    /// > and the fields have initializers, which is to align with the behavior of TypeScript's
+    /// > `useDefineForClassFields: false` option.
     ///
     /// Input:
     /// ```ts
@@ -243,14 +246,13 @@ impl<'a> TypeScript<'a, '_> {
         constructor: &mut MethodDefinition<'a>,
         ctx: &mut TraverseCtx<'a>,
     ) {
-        if !constructor.kind.is_constructor() {
+        if !constructor.kind.is_constructor() || constructor.value.body.is_none() {
             return;
         }
 
         let params = &constructor.value.params.items;
         let assignments = Self::convert_constructor_params(params, ctx).collect::<Vec<_>>();
 
-        // `constructor {}` is guaranteed that it is `Some`.
         let constructor_body_statements = &mut constructor.value.body.as_mut().unwrap().statements;
         let super_call_position = Self::get_super_call_position(constructor_body_statements);
 

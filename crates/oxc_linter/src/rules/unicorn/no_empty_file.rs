@@ -1,4 +1,3 @@
-use oxc_ast::AstKind;
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
@@ -22,19 +21,21 @@ pub struct NoEmptyFile;
 declare_oxc_lint!(
     /// ### What it does
     ///
+    /// Disallows files that do not contain any meaningful code.
     ///
-    /// Disallows any files only containing the following:
-    ///  - Whitespace
-    ///  - Comments
-    ///  - Directives
-    ///  - Empty statements
-    ///  - Empty blocks
-    ///  - Hashbang
+    /// This includes files that consist only of:
+    /// - Whitespace
+    /// - Comments
+    /// - Directives (e.g., `"use strict"`)
+    /// - Empty statements (`;`)
+    /// - Empty blocks (`{}`)
+    /// - Hashbangs (`#!/usr/bin/env node`)
     ///
     /// ### Why is this bad?
     ///
-    /// Meaningless files clutter a codebase.
-    ///
+    /// Files with no executable or exportable content are typically unintentional
+    /// or left over from refactoring. They clutter the codebase and may confuse
+    /// tooling or developers by appearing to serve a purpose when they do not.
     NoEmptyFile,
     unicorn,
     correctness,
@@ -42,11 +43,7 @@ declare_oxc_lint!(
 
 impl Rule for NoEmptyFile {
     fn run_once(&self, ctx: &LintContext) {
-        let Some(root) = ctx.nodes().root_node() else {
-            return;
-        };
-        let AstKind::Program(program) = root.kind() else { unreachable!() };
-
+        let program = ctx.nodes().program();
         if program.body.iter().any(|node| !is_empty_stmt(node)) {
             return;
         }
@@ -77,11 +74,12 @@ fn has_triple_slash_directive(ctx: &LintContext<'_>) -> bool {
             continue;
         }
         let text = ctx.source_range(comment.content_span());
-        if text.starts_with("///") {
+
+        // `comment.content_span` doesn't include the leading `//` of the comment
+        if text.starts_with('/') {
             return true;
         }
     }
-
     false
 }
 
@@ -114,6 +112,7 @@ fn test() {
         r"(() => {})()",
         "(() => {})();",
         "/* eslint-disable no-empty-file */",
+        r#"/// <reference types="vite/client" />"#,
     ];
 
     let fail = vec![

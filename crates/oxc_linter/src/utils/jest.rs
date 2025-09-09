@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use oxc_ast::{
     AstKind,
     ast::{
-        CallExpression, Expression, ImportDeclaration, ImportDeclarationSpecifier, TemplateLiteral,
+        CallExpression, Expression, ImportDeclaration, ImportDeclarationSpecifier,
         match_member_expression,
     },
 };
@@ -12,13 +12,13 @@ use oxc_semantic::{AstNode, ReferenceId, Semantic, SymbolId};
 use oxc_span::CompactStr;
 
 use crate::LintContext;
-
-mod parse_jest_fn;
 pub use crate::utils::jest::parse_jest_fn::{
     ExpectError, KnownMemberExpressionParentKind, KnownMemberExpressionProperty,
     MemberExpressionElement, ParsedExpectFnCall, ParsedGeneralJestFnCall,
     ParsedJestFnCall as ParsedJestFnCallNew, parse_jest_fn_call,
 };
+
+mod parse_jest_fn;
 
 const JEST_METHOD_NAMES: [&str; 18] = [
     "afterAll",
@@ -180,19 +180,17 @@ pub fn iter_possible_jest_call_node<'a, 'c>(
         std::iter::from_fn(move || {
             loop {
                 let parent = semantic.nodes().parent_node(id);
-                if let Some(parent) = parent {
-                    let parent_kind = parent.kind();
-                    if matches!(parent_kind, AstKind::CallExpression(_)) {
-                        id = parent.id();
-                        return Some(PossibleJestNode { node: parent, original });
-                    } else if matches!(
-                        parent_kind,
-                        AstKind::MemberExpression(_) | AstKind::TaggedTemplateExpression(_)
-                    ) {
-                        id = parent.id();
-                    } else {
-                        return None;
-                    }
+                let parent_kind = parent.kind();
+                if matches!(parent_kind, AstKind::CallExpression(_)) {
+                    id = parent.id();
+                    return Some(PossibleJestNode { node: parent, original });
+                } else if matches!(
+                    parent_kind,
+                    AstKind::StaticMemberExpression(_)
+                        | AstKind::TaggedTemplateExpression(_)
+                        | AstKind::ComputedMemberExpression(_)
+                ) {
+                    id = parent.id();
                 } else {
                     return None;
                 }
@@ -212,8 +210,7 @@ fn collect_ids_referenced_to_import<'a, 'c>(
             let symbol_id = SymbolId::from_usize(symbol_id);
             if semantic.scoping().symbol_flags(symbol_id).is_import() {
                 let id = semantic.scoping().symbol_declaration(symbol_id);
-                let Some(AstKind::ImportDeclaration(import_decl)) =
-                    semantic.nodes().parent_kind(id)
+                let AstKind::ImportDeclaration(import_decl) = semantic.nodes().parent_kind(id)
                 else {
                     return None;
                 };
@@ -274,8 +271,10 @@ pub fn get_node_name_vec<'a>(expr: &'a Expression<'a>) -> Vec<Cow<'a, str>> {
         Expression::StringLiteral(string_literal) => {
             chain.push(Cow::Borrowed(&string_literal.value));
         }
-        Expression::TemplateLiteral(template_literal) if is_pure_string(template_literal) => {
-            chain.push(Cow::Borrowed(template_literal.quasi().unwrap().as_str()));
+        Expression::TemplateLiteral(template_literal) => {
+            if let Some(quasi) = template_literal.single_quasi() {
+                chain.push(Cow::Borrowed(quasi.as_str()));
+            }
         }
         Expression::TaggedTemplateExpression(tagged_expr) => {
             chain.extend(get_node_name_vec(&tagged_expr.tag));
@@ -297,10 +296,6 @@ pub fn get_node_name_vec<'a>(expr: &'a Expression<'a>) -> Vec<Cow<'a, str>> {
     chain
 }
 
-fn is_pure_string(template_literal: &TemplateLiteral) -> bool {
-    template_literal.expressions.is_empty() && template_literal.quasis.len() == 1
-}
-
 pub fn is_equality_matcher(matcher: &KnownMemberExpressionProperty) -> bool {
     matcher.is_name_equal("toBe")
         || matcher.is_name_equal("toEqual")
@@ -316,22 +311,20 @@ mod test {
     use oxc_semantic::SemanticBuilder;
     use oxc_span::SourceType;
 
-    use crate::{ContextHost, ModuleRecord, options::LintOptions};
+    use crate::{ContextHost, ModuleRecord, context::ContextSubHost, options::LintOptions};
 
     #[test]
     fn test_is_jest_file() {
         let allocator = Allocator::default();
-        let source_type = SourceType::default();
-        let parser_ret = Parser::new(&allocator, "", source_type).parse();
-        let semantic_ret =
-            SemanticBuilder::new().with_cfg(true).build(&parser_ret.program).semantic;
-        let semantic_ret = Rc::new(semantic_ret);
 
         let build_ctx = |path: &'static str| {
+            let source_type = SourceType::default();
+            let parser_ret = Parser::new(&allocator, "", source_type).parse();
+            let program = allocator.alloc(parser_ret.program);
+            let semantic = SemanticBuilder::new().with_cfg(true).build(program).semantic;
             Rc::new(ContextHost::new(
                 path,
-                Rc::clone(&semantic_ret),
-                Arc::new(ModuleRecord::default()),
+                vec![ContextSubHost::new(semantic, Arc::new(ModuleRecord::default()), 0)],
                 LintOptions::default(),
                 Arc::default(),
             ))

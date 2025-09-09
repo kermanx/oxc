@@ -37,6 +37,12 @@ pub struct NoThisAliasConfig {
     allow_names: FxHashSet<CompactStr>,
 }
 
+impl Default for NoThisAliasConfig {
+    fn default() -> Self {
+        Self { allow_destructuring: true, allow_names: FxHashSet::default() }
+    }
+}
+
 impl std::ops::Deref for NoThisAlias {
     type Target = NoThisAliasConfig;
 
@@ -45,11 +51,6 @@ impl std::ops::Deref for NoThisAlias {
     }
 }
 
-impl Default for NoThisAliasConfig {
-    fn default() -> Self {
-        Self { allow_destructuring: true, allow_names: FxHashSet::default() }
-    }
-}
 impl NoThisAlias {
     fn is_allowed(&self, name: &str) -> bool {
         self.allow_names.contains(name)
@@ -59,19 +60,11 @@ impl NoThisAlias {
 declare_oxc_lint!(
     /// ### What it does
     ///
-    /// Disallow unnecessary constraints on generic types.
+    /// Disallow aliasing `this`
     ///
     /// ### Why is this bad?
     ///
-    /// Generic type parameters (`<T>`) in TypeScript may be "constrained" with
-    /// an extends keyword.  When no extends is provided, type parameters
-    /// default a constraint to unknown. It is therefore redundant to extend
-    /// from any or unknown.
-    ///
-    /// the rule doesn't allow `const {allowedName} = this`
-    /// this is to keep 1:1 with eslint implementation
-    /// sampe with `obj.<allowedName> = this`
-    /// ```
+    /// Assigning a variable to `this` instead of properly using arrow lambdas may be a symptom of pre-ES6 practices or not managing scope well.
     NoThisAlias,
     typescript,
     correctness
@@ -94,7 +87,7 @@ impl Rule for NoThisAlias {
             allow_destructuring: obj
                 .and_then(|v| v.get("allowDestructuring"))
                 .and_then(Value::as_bool)
-                .unwrap_or_default(),
+                .unwrap_or(true),
             allow_names: allowed_names,
         }))
     }

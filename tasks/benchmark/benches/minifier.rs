@@ -13,7 +13,7 @@ use oxc_transformer::{TransformOptions, Transformer};
 fn bench_minifier(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("minifier");
 
-    for file in TestFiles::minimal().files() {
+    for file in TestFiles::minimal().files().iter().skip(1) {
         let id = BenchmarkId::from_parameter(&file.file_name);
         let source_text = &file.source_text;
         let source_type = file.source_type;
@@ -41,7 +41,7 @@ fn bench_minifier(criterion: &mut Criterion) {
 
                 let options = CompressOptions::smallest();
                 runner.run(|| {
-                    Compressor::new(&allocator, options).build_with_scoping(scoping, &mut program);
+                    Compressor::new(&allocator).build_with_scoping(&mut program, scoping, options);
                 });
             });
         });
@@ -57,14 +57,17 @@ fn bench_mangler(criterion: &mut Criterion) {
         let source_type = SourceType::from_path(&file.file_name).unwrap();
         let source_text = file.source_text.as_str();
         let mut allocator = Allocator::default();
+        let mut temp_allocator = Allocator::default();
         group.bench_function(id, |b| {
             b.iter_with_setup_wrapper(|runner| {
                 allocator.reset();
+                temp_allocator.reset();
                 let program = Parser::new(&allocator, source_text, source_type).parse().program;
                 let mut semantic =
                     SemanticBuilder::new().with_scope_tree_child_ids(true).build(&program).semantic;
                 runner.run(|| {
-                    Mangler::new().build_with_semantic(&mut semantic, &program);
+                    Mangler::new_with_temp_allocator(&temp_allocator)
+                        .build_with_semantic(&mut semantic, &program);
                 });
             });
         });

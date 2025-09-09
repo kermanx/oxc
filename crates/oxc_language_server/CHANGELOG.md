@@ -2,7 +2,187 @@
 
 All notable changes to this package will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project does not adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) until v1.0.0.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0).
+
+## [1.14.0] - 2025-08-30
+
+### 🐛 Bug Fixes
+
+- 902b39b language_server: Split run logic for `oxlint` and `tsgolint` (#13332) (Sysix)
+- 2a910c5 language_server: Disable tsgolint test on big endian (#13313) (camc314)
+
+### 🚜 Refactor
+
+- 6431033 linter: Move ignore logic to `LintIgnoreMatcher` (#13222) (Sysix)
+
+### 🧪 Testing
+
+- 33e0e8b language_server: Dont run tsgolint related test on big-edian (#13342) (Sysix)
+
+
+## [1.13.0] - 2025-08-26
+
+### 🐛 Bug Fixes
+
+- 648e939 linter: Parse `ignorePatterns` with gitignore syntax (#13221) (Sysix)
+
+
+## [1.12.0] - 2025-08-17
+
+### 🚀 Features
+
+- aecacae linter: Support `ignorePatterns` for nested configs (#12210) (Sysix)
+
+### 🐛 Bug Fixes
+
+- b0558a4 linter: Prevent unsound use of `Allocator` across threads (#13032) (overlookmotel)
+
+### 🚜 Refactor
+
+- b638371 language_server: Do not check twice for supported extension (#13130) (Sysix)
+- 6c5b8be linter: Create `AllocatorPool` in `Runtime::new` (#13106) (overlookmotel)
+
+
+
+
+## [1.11.0] - 2025-08-07
+
+### 🚜 Refactor
+
+- 9b9249d oxc_language_server: Remove unnecessary globset (#12861) (shulaoda)
+
+
+## [1.10.0] - 2025-08-06
+
+### 🚀 Features
+
+- 5475075 vscode/language_server: Add `tsConfigPath` option (#12484) (Sysix)
+
+### 🚜 Refactor
+
+- c0e224a linter: Store `ExternalRuleId` in `OxlintOverrides` not raw names (#12502) (camc314)
+
+### 🎨 Styling
+
+- c15da81 codegen, formatter, linter, minifier, transformer: Re-order imports (#12725) (Copilot)
+
+
+
+
+## [1.7.0] - 2025-07-16
+
+### 🚀 Features
+
+- d387729 linter: JS custom rules config (#12160) (camc314)
+
+### 🐛 Bug Fixes
+
+- 1920c6b language_server: Respect the root `.oxlintrc.json` file for `ignorePatterns` (#12171) (Sysix)
+- 853d2bc linter, language_server: Correctly identify usage of `import` plugin (#12157) (overlookmotel)
+
+### 🚜 Refactor
+
+- 6e54645 language_server: Store `LintService` instead of `Linter` (#12016) (Sysix)
+- 113cf8c linter: Move `LintServiceOptions.paths` to `LintService.with_paths` (#12015) (Sysix)
+
+
+## [1.6.0] - 2025-07-07
+
+### 🚀 Features
+
+- f81d336 linter: Introduce `ExternalLinter` struct (#12052) (camc314)
+
+### 🐛 Bug Fixes
+
+- 5851d2c oxlint: Always follow symlinks; remove cli flag `--symlinks` (#12048) (Boshen)
+
+### 🚜 Refactor
+
+- 8d1be94 language_server: Fix todo by avoiding allocation (#12096) (Ulrich Stark)
+- 72418ca linter: `RuntimeFileSystem::write_file` take `&str` (#12075) (overlookmotel)
+
+
+
+
+## [1.3.0] - 2025-06-23
+
+### 🚀 Features
+
+- 1a54184 linter: Add fix for unused disable directive (#11708) (Sysix)
+- 816ff03 linter: Read source text into the arena (#11825) (camc314)
+
+### 🚜 Refactor
+
+- b39d1fa linter: Output smaller spans for unused disable directives with multiple rules (#11781) (Sysix)
+
+
+## [1.2.0] - 2025-06-19
+
+### 🚀 Features
+
+- 38dc614 oxc_linter: Reuse allocators (#11736) (camc314)
+- 094b81c language_server: Add `unusedDisableDirectives` option (#11645) (Sysix)
+
+### 🚜 Refactor
+
+- abdbaa9 language_server: Use rule name directly from OxcCode instead of parsing out of the stringified version of OxcCode (#11714) (Nicholas Rayburn)
+
+
+
+## [1.0.0] - 2025-06-10
+
+## [0.18.1] - 2025-06-09
+
+### ⚡ Performance
+
+- 7bf25cb language_server: Transform `MessageWithPosition` to `Diagnostic` with less allocations (#11561) (Sysix)
+
+## [0.18.0] - 2025-06-06
+
+### Refactor
+
+- db0b099 language_server: Convert only once uri to path when creating `ServerLinter` (#11503) (Sysix)
+- ccceb52 language_server: Simplify `workspace/didChangeConfiguration` call (#11462) (Sysix)
+
+## [0.17.0] - 2025-05-30
+
+### Features
+
+- 2083d33 linter/language_server: Add second editor suggestion for `react/forward-ref-uses-ref` (#11375) (Sysix)
+
+### Bug Fixes
+
+- 7af5bb1 oxc_language_server: Include save option for text document sync capability (#11297) (Nicholas Rayburn)
+
+### Performance
+
+- 0ed6c1a language_server: Use `Arc<RwLock>` instead of `Mutex` for workspace workers (#11328) (Sysix)
+
+### Refactor
+
+- 042a3f3 linter: Use `PossibleFixes` instead of `Option<Fix>` (#11284) (Sysix)
+
+## [0.16.12] - 2025-05-25
+
+- 5d9344f rust: [**BREAKING**] Clippy avoid-breaking-exported-api = false (#11088) (Boshen)
+
+### Features
+
+- 0c1f382 language_server: Watch for files inside `.oxlintrc.json` extends (#11226) (Sysix)
+- 1675b2c language_server: Tell clients to watch for .oxlintrc.json files (#11078) (Sysix)
+
+### Bug Fixes
+
+- 0df5147 language_server: Correctly disable nested config search (#11173) (Sysix)
+
+### Refactor
+
+- 0d192e8 language_server: Introduce `ServerLinter.extended_paths` property (#11223) (Sysix)
+- ff8f519 language_server: Restructure `initialized` function (#11077) (Sysix)
+- 6b68de0 language_server: Add intern capability for `didChangeWatchedFiles.dynamicRegistration` (#11075) (Sysix)
+- 35761ae language_server/editor: Refresh file watchers without restarting the server (didChangeConfiguration) (#11112) (Sysix)
+- d5fdf17 language_server/editor: Refresh file watchers without restarting the server (didChangeWorkspaceFolders) (#11094) (Sysix)
+- 9f3a14a linter: Cleanup diagnostic and docs for `eslint/no-console` (#11101) (Ulrich Stark)
 
 ## [0.16.11] - 2025-05-16
 

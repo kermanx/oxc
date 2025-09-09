@@ -16,17 +16,18 @@ use crate::{
     utils::{PossibleJestNode, iter_possible_jest_call_node, parse_expect_jest_fn_call},
 };
 
-// TODO: re-word diagnostic messages
-fn no_snapshot(x0: usize, span: Span) -> OxcDiagnostic {
-    OxcDiagnostic::warn("Disallow large snapshots.")
-        .with_help(format!("`{x0:?}`s should begin with lowercase"))
+fn no_snapshot(line_count: usize, span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Snapshot is too long.")
+        .with_help(format!(
+            "Expected to not encounter a Jest snapshot but one was found that is {line_count} lines long"
+        ))
         .with_label(span)
 }
 
-fn too_long_snapshots(x0: usize, x1: usize, span: Span) -> OxcDiagnostic {
-    OxcDiagnostic::warn("Disallow large snapshots.")
+fn too_long_snapshot(line_limit: usize, line_count: usize, span: Span) -> OxcDiagnostic {
+    OxcDiagnostic::warn("Snapshot is too long.")
         .with_help(format!(
-            "Expected Jest snapshot to be smaller than {x0:?} lines but was {x1:?} lines long"
+            "Expected Jest snapshot to be no longer than {line_limit} lines but it was {line_count} lines long"
         ))
         .with_label(span)
 }
@@ -34,11 +35,17 @@ fn too_long_snapshots(x0: usize, x1: usize, span: Span) -> OxcDiagnostic {
 #[derive(Debug, Default, Clone)]
 pub struct NoLargeSnapshots(Box<NoLargeSnapshotsConfig>);
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct NoLargeSnapshotsConfig {
     pub max_size: usize,
     pub inline_max_size: usize,
     pub allowed_snapshots: FxHashMap<CompactStr, Vec<CompactStr>>,
+}
+
+impl Default for NoLargeSnapshotsConfig {
+    fn default() -> Self {
+        Self { max_size: 50, inline_max_size: 50, allowed_snapshots: FxHashMap::default() }
+    }
 }
 
 impl Deref for NoLargeSnapshots {
@@ -63,7 +70,6 @@ declare_oxc_lint!(
     /// important to allow for thorough reviews.
     ///
     /// ### Example
-    ///
     ///
     /// Examples of **incorrect** code for this rule:
     /// ```javascript
@@ -121,6 +127,7 @@ declare_oxc_lint!(
     /// line 51
     /// `;
     /// ```
+    ///
     /// Examples of **incorrect** code for this rule:
     /// ```js
     /// exports[`a more manageable and readable snapshot 1`] = `
@@ -143,13 +150,15 @@ impl Rule for NoLargeSnapshots {
             .and_then(|c| c.get("maxSize"))
             .and_then(serde_json::Value::as_number)
             .and_then(serde_json::Number::as_u64)
-            .map_or(50, |v| usize::try_from(v).unwrap_or(50));
+            .and_then(|v| usize::try_from(v).ok())
+            .unwrap_or(50);
 
         let inline_max_size = config
             .and_then(|c| c.get("inlineMaxSize"))
             .and_then(serde_json::Value::as_number)
             .and_then(serde_json::Number::as_u64)
-            .map_or(max_size, |v| usize::try_from(v).unwrap_or(max_size));
+            .and_then(|v| usize::try_from(v).ok())
+            .unwrap_or(max_size);
 
         let allowed_snapshots = config
             .and_then(|c| c.get("allowedSnapshots"))
@@ -190,12 +199,13 @@ impl NoLargeSnapshots {
             return;
         };
 
-        if !jest_fn_call.args.is_empty()
-            && jest_fn_call.members.iter().any(|member| {
+        if !jest_fn_call.args.is_empty() {
+            let Some(snapshot_matcher) = jest_fn_call.members.iter().find(|member| {
                 member.is_name_equal("toMatchInlineSnapshot")
                     || member.is_name_equal("toThrowErrorMatchingInlineSnapshot")
-            })
-        {
+            }) else {
+                return;
+            };
             let Some(first_arg) = jest_fn_call.args.first() else {
                 return;
             };
@@ -203,8 +213,7 @@ impl NoLargeSnapshots {
                 return;
             };
 
-            let span = first_arg_expr.span();
-            self.report_in_span(span, ctx);
+            self.report_in_span(snapshot_matcher.span, first_arg_expr.span(), ctx);
         }
     }
 
@@ -236,19 +245,23 @@ impl NoLargeSnapshots {
             if line_count == 0 {
                 ctx.diagnostic(no_snapshot(line_count, expr_stmt.span));
             } else {
-                ctx.diagnostic(too_long_snapshots(self.max_size, line_count, expr_stmt.span));
+                ctx.diagnostic(too_long_snapshot(self.max_size, line_count, expr_stmt.span));
             }
         }
     }
 
-    fn report_in_span(&self, span: Span, ctx: &LintContext) {
-        let line_count = Self::get_line_count(span, ctx);
+    fn report_in_span(&self, snapshot_matcher_span: Span, first_arg_span: Span, ctx: &LintContext) {
+        let line_count = Self::get_line_count(first_arg_span, ctx);
 
         if line_count > self.inline_max_size {
             if self.inline_max_size == 0 {
-                ctx.diagnostic(no_snapshot(line_count, span));
+                ctx.diagnostic(no_snapshot(line_count, snapshot_matcher_span));
             } else {
-                ctx.diagnostic(too_long_snapshots(self.inline_max_size, line_count, span));
+                ctx.diagnostic(too_long_snapshot(
+                    self.inline_max_size,
+                    line_count,
+                    snapshot_matcher_span,
+                ));
             }
         }
     }
@@ -341,7 +354,7 @@ fn test() {
     // #[cfg(not(target_os = "windows"))]
     // let another_snap_path = "/another-mock-component.jsx.snap";
 
-    let tow_match_inline_cases = generate_match_inline_snapshot(2);
+    let two_match_inline_cases = generate_match_inline_snapshot(2);
     let two_throw_error_match_cases = generate_throw_error_matching_inline_snapshot(2);
     let twenty_match_inline_cases = generate_match_inline_snapshot(20);
     let sixty_match_inline_cases = generate_match_inline_snapshot(60);
@@ -365,7 +378,7 @@ fn test() {
         ("expect(something).toBe(1)", None, None, None),
         ("expect(something).toMatchInlineSnapshot", None, None, None),
         ("expect(something).toMatchInlineSnapshot()", None, None, None),
-        (tow_match_inline_cases.as_str(), None, None, None),
+        (two_match_inline_cases.as_str(), None, None, None),
         (two_throw_error_match_cases.as_str(), None, None, None),
         (
             twenty_match_inline_cases.as_str(),
@@ -421,6 +434,12 @@ fn test() {
         (
             fifty_throw_error_match_cases.as_str(),
             Some(serde_json::json!([{ "maxSize": 51, "inlineMaxSize": 50 }])),
+            None,
+            None,
+        ),
+        (
+            fifty_throw_error_match_cases.as_str(),
+            Some(serde_json::json!([{ "maxSize": 0 }])),
             None,
             None,
         ),

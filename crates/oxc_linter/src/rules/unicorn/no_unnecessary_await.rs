@@ -56,28 +56,21 @@ impl Rule for NoUnnecessaryAwait {
                     || matches!(expr.argument, Expression::ClassExpression(_))
             } || {
                 // `+await +1` -> `++1`
-                ctx.nodes().parent_node(node.id()).is_some_and(|parent| {
-                    if let (
-                        AstKind::UnaryExpression(parent_unary),
-                        Expression::UnaryExpression(inner_unary),
-                    ) = (parent.kind(), &expr.argument)
-                    {
-                        parent_unary.operator == inner_unary.operator
-                    } else {
-                        false
-                    }
-                })
+                let parent = ctx.nodes().parent_node(node.id());
+                if let (
+                    AstKind::UnaryExpression(parent_unary),
+                    Expression::UnaryExpression(inner_unary),
+                ) = (parent.kind(), &expr.argument)
+                {
+                    parent_unary.operator == inner_unary.operator
+                } else {
+                    false
+                }
             } {
-                ctx.diagnostic(no_unnecessary_await_diagnostic(Span::new(
-                    expr.span.start,
-                    expr.span.start + 5,
-                )));
+                ctx.diagnostic(no_unnecessary_await_diagnostic(Span::sized(expr.span.start, 5)));
             } else {
                 ctx.diagnostic_with_fix(
-                    no_unnecessary_await_diagnostic(Span::new(
-                        expr.span.start,
-                        expr.span.start + 5,
-                    )),
+                    no_unnecessary_await_diagnostic(Span::sized(expr.span.start, 5)),
                     |fixer| fixer.replace(expr.span, fixer.source_range(expr.argument.span())),
                 );
             }

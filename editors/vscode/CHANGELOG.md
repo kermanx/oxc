@@ -2,7 +2,89 @@
 
 All notable changes to this package will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project does not adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) until v1.0.0.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0).
+
+
+
+## [1.12.0] - 2025-08-17
+
+### 🚀 Features
+
+- aecacae linter: Support `ignorePatterns` for nested configs (#12210) (Sysix)
+
+### 🚜 Refactor
+
+- b638371 language_server: Do not check twice for supported extension (#13130) (Sysix)
+
+
+
+
+
+## [1.10.0] - 2025-08-06
+
+### 🚀 Features
+
+- 5475075 vscode/language_server: Add `tsConfigPath` option (#12484) (Sysix)
+
+
+## [1.9.0] - 2025-07-29
+
+### 🐛 Bug Fixes
+
+- cc19c8b vscode: Fix statusbar icon order (#12544) (Christian Fehmer)
+
+
+
+
+
+
+
+## [1.3.0] - 2025-06-23
+
+### 🚀 Features
+
+- 1a54184 linter: Add fix for unused disable directive (#11708) (Sysix)
+
+
+## [1.2.0] - 2025-06-19
+
+### 🚀 Features
+
+- 0b4261b vscode: Add `oxc.requireConfig` configuration (#11700) (Sysix)
+- 094b81c language_server: Add `unusedDisableDirectives` option (#11645) (Sysix)
+
+
+
+## [1.0.0] - 2025-06-10
+
+## [0.18.1] - 2025-06-09
+
+### 🚜 Refactor
+
+- 7ab84c2 editor: Use pattern for textDocument filter (#11559) (Sysix)
+
+### 📚 Documentation
+
+- e13ed51 editor/vscode: Fix typo in README (#11572) (David)
+
+## [0.18.0] - 2025-06-06
+
+### Testing
+
+- 2ba2893 editor: Fix test for auto `fixAll` on save (#11448) (Sysix)
+
+## [0.16.12] - 2025-05-25
+
+### Features
+
+- 0c1f382 language_server: Watch for files inside `.oxlintrc.json` extends (#11226) (Sysix)
+- 1675b2c language_server: Tell clients to watch for .oxlintrc.json files (#11078) (Sysix)
+
+### Refactor
+
+- a28fe1e editor: Use always the provided language server (#11115) (Sysix)
+- 35761ae language_server/editor: Refresh file watchers without restarting the server (didChangeConfiguration) (#11112) (Sysix)
+- d5fdf17 language_server/editor: Refresh file watchers without restarting the server (didChangeWorkspaceFolders) (#11094) (Sysix)
 
 ## [0.16.11] - 2025-05-16
 

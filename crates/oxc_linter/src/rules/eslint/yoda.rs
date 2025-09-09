@@ -6,7 +6,7 @@ use oxc_ast::{
     },
 };
 use oxc_diagnostics::OxcDiagnostic;
-use oxc_ecmascript::{ToBigInt, is_global_reference::WithoutGlobalReferenceInformation};
+use oxc_ecmascript::{ToBigInt, WithoutGlobalReferenceInformation};
 use oxc_macros::declare_oxc_lint;
 use oxc_span::{GetSpan, Span};
 
@@ -19,11 +19,17 @@ fn yoda_diagnostic(span: Span, never: bool, operator: &str) -> OxcDiagnostic {
         .with_label(span)
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct Yoda {
     never: bool,
     except_range: bool,
     only_equality: bool,
+}
+
+impl Default for Yoda {
+    fn default() -> Self {
+        Self { never: true, except_range: false, only_equality: false }
+    }
 }
 
 declare_oxc_lint!(
@@ -188,7 +194,7 @@ declare_oxc_lint!(
 
 impl Rule for Yoda {
     fn from_configuration(value: serde_json::Value) -> Self {
-        let mut config = Self { never: true, except_range: false, only_equality: false };
+        let mut config = Self::default();
 
         let Some(arr) = value.as_array() else {
             return config;
@@ -218,16 +224,15 @@ impl Rule for Yoda {
             return;
         };
 
-        if let Some(parent_node) = ctx.nodes().parent_node(node.id()) {
-            if let AstKind::LogicalExpression(logical_expr) = parent_node.kind() {
-                let parent_logical_expr = ctx.nodes().parent_node(parent_node.id());
+        let parent_node = ctx.nodes().parent_node(node.id());
+        if let AstKind::LogicalExpression(logical_expr) = parent_node.kind() {
+            let parent_logical_expr = ctx.nodes().parent_node(parent_node.id());
 
-                if self.except_range
-                    && parent_logical_expr.is_some_and(|e| is_parenthesized(e))
-                    && is_range(logical_expr, ctx)
-                {
-                    return;
-                }
+            if self.except_range
+                && is_parenthesized(parent_logical_expr)
+                && is_range(logical_expr, ctx)
+            {
+                return;
             }
         }
 

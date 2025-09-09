@@ -205,8 +205,12 @@ impl<'a> Symbol<'_, 'a> {
             match parent.kind() {
                 AstKind::ParenthesizedExpression(_)
                 | AstKind::IdentifierReference(_)
-                | AstKind::SimpleAssignmentTarget(_)
-                | AstKind::AssignmentTarget(_) => {}
+                | AstKind::ComputedMemberExpression(_)
+                | AstKind::StaticMemberExpression(_)
+                | AstKind::PrivateFieldExpression(_)
+                | AstKind::AssignmentTargetPropertyIdentifier(_)
+                | AstKind::ArrayAssignmentTarget(_)
+                | AstKind::ObjectAssignmentTarget(_) => {}
                 AstKind::ForInStatement(ForInStatement { body, .. })
                 | AstKind::ForOfStatement(ForOfStatement { body, .. }) => match body {
                     Statement::ReturnStatement(_) => return true,
@@ -245,11 +249,14 @@ impl<'a> Symbol<'_, 'a> {
             return false;
         }
 
-        for parent in self.nodes().ancestors(reference.node_id()).map(AstNode::kind) {
+        for parent in self.nodes().ancestor_kinds(reference.node_id()) {
             match parent {
                 AstKind::IdentifierReference(_)
-                | AstKind::SimpleAssignmentTarget(_)
-                | AstKind::AssignmentTarget(_) => {}
+                | AstKind::StaticMemberExpression(_)
+                | AstKind::PrivateFieldExpression(_)
+                | AstKind::ComputedMemberExpression(_)
+                | AstKind::AssignmentTargetPropertyIdentifier(_)
+                | AstKind::AssignmentTargetPropertyProperty(_) => {}
                 AstKind::AssignmentExpression(assignment) => {
                     return options.is_ignored_assignment_target(self, &assignment.left);
                 }
@@ -364,11 +371,11 @@ impl<'a> Symbol<'_, 'a> {
     /// for code like `let a = 0; a`, but bans code like `let a = 0; a++`;
     ///
     /// - We encounter a node proving that the reference is absolutely used by
-    /// another variable, we return `false` immediately.
+    ///   another variable, we return `false` immediately.
     /// - When we encounter an AST node that updates the value of the symbol this
-    /// reference is for, such as an [`AssignmentExpression`] with the symbol on
-    /// the LHS or a mutating [`UnaryExpression`], we mark the reference as not
-    /// being used by others.
+    ///   reference is for, such as an [`AssignmentExpression`] with the symbol on
+    ///   the LHS or a mutating [`UnaryExpression`], we mark the reference as not
+    ///   being used by others.
     /// - When we encounter a node where we are sure the value produced by an
     ///   expression will no longer be used, such as an [`ExpressionStatement`],
     ///   we end our search. This is because expression statements produce a
@@ -403,20 +410,20 @@ impl<'a> Symbol<'_, 'a> {
         let name = self.name();
         let ref_span = self.get_ref_span(reference);
 
-        for node in self.nodes().ancestors(reference.node_id()).skip(1) {
+        for node in self.nodes().ancestors(reference.node_id()) {
             match node.kind() {
                 // references used in declaration of another variable are definitely
                 // used by others
                 AstKind::VariableDeclarator(_)
                 | AstKind::JSXExpressionContainer(_)
-                | AstKind::Argument(_) => {
+                | AstKind::Argument(_)
+                | AstKind::PropertyDefinition(_) => {
                     // definitely used, short-circuit
                     return false;
                 }
                 // When symbol is being assigned a new value, we flag the reference
                 // as only affecting itself until proven otherwise.
-                AstKind::UpdateExpression(UpdateExpression { argument, .. })
-                | AstKind::SimpleAssignmentTarget(argument) => {
+                AstKind::UpdateExpression(UpdateExpression { argument, .. }) => {
                     // `a.b++` or `a[b] + 1` are not reassignment of `a`
                     if !argument.is_member_expression() {
                         is_used_by_others = false;
@@ -497,9 +504,7 @@ impl<'a> Symbol<'_, 'a> {
                 // loops?
                 AstKind::ForInStatement(_)
                 | AstKind::ForOfStatement(_)
-                | AstKind::WhileStatement(_) => {
-                    break;
-                }
+                | AstKind::WhileStatement(_) => break,
                 // this is needed to handle `return () => foo++`
                 AstKind::ExpressionStatement(_) => {
                     if self.is_in_return_statement(node.id()) {
@@ -507,9 +512,7 @@ impl<'a> Symbol<'_, 'a> {
                     }
                     break;
                 }
-                AstKind::Function(f) if f.is_declaration() => {
-                    break;
-                }
+                AstKind::Function(f) if f.is_declaration() => break,
                 // implicit return in an arrow function
                 AstKind::ArrowFunctionExpression(f)
                     if f.body.statements.len() == 1
@@ -649,6 +652,7 @@ impl<'a> Symbol<'_, 'a> {
                         AstKind::CallExpression(_)
                             | AstKind::AwaitExpression(_)
                             | AstKind::YieldExpression(_)
+                            | AstKind::ChainExpression(_)
                     ) {
                         continue;
                     }
@@ -742,35 +746,41 @@ impl<'a> Symbol<'_, 'a> {
         false
     }
 
+    /// Checks if a reference is within a function or class declaration
+    /// and refers to that same function or class itself.
+    ///
+    /// ```js
+    /// // Function
+    /// function foo() {
+    ///    foo(); // Refers to the function itself, treated as a self-call
+    /// }
+    ///
+    /// foo(); // This call expression is outside the function, not a self-call
+    ///
+    /// // Class
+    /// class Foo {
+    ///   constructor() { }
+    ///   bar() {
+    ///    new Foo(); // Refers to the class itself, treated as a self-call
+    ///   }
+    /// }
+    ///
+    /// new Foo(); // This new expression is outside the class, not a self-call
+    /// ```
     fn is_self_call_simple(&self, reference: &Reference) -> bool {
-        let decl_scope_id = self.scope_id();
-        let call_scope_id = self.get_ref_scope(reference);
-        let Some(container_id) = self.declaration().kind().get_container_scope_id() else {
-            debug_assert!(
-                false,
-                "Found a function call or or new expr reference on a node flagged as a function or class, but the symbol's declaration node has no scope id. It should always be a container."
-            );
-            return false;
-        };
-
-        // scope ids are created in ascending order in an "E" shape
-        // (depth-first, from top to bottom). if call < decl, then it will never
-        // be within a scope contained by the declaration, and therefore never
-        // be a self-call. Similarly, if the call is within the same scope as
-        // the declaration, it will never be inside the declaration.
-        if call_scope_id <= decl_scope_id {
-            return false;
+        let redeclarations = self.scoping().symbol_redeclarations(self.id());
+        if redeclarations.is_empty() {
+            self.declaration().span().contains_inclusive(self.get_ref_span(reference))
+        } else {
+            // Syntax like `var a = 0; function a() { a() }` is legal. We need
+            // to check the redeclarations to find the one that is a function
+            // and use its span to check if the reference is within it.
+            let span = self.get_ref_span(reference);
+            redeclarations.iter().any(|decl| {
+                decl.flags.intersects(SymbolFlags::Function)
+                    && self.nodes().kind(decl.declaration).span().contains_inclusive(span)
+            })
         }
-
-        for scope_id in self.scoping().scope_ancestors(call_scope_id) {
-            if scope_id == container_id {
-                return true;
-            } else if scope_id == decl_scope_id {
-                return false;
-            }
-        }
-
-        unreachable!();
     }
 
     /// Get the [`ScopeId`] where a [`Reference`] is located.
@@ -812,13 +822,8 @@ impl<'a> Symbol<'_, 'a> {
                 AstKind::VariableDeclarator(decl) if needs_variable_identifier => {
                     return decl.id.get_binding_identifier().map(BindingIdentifier::symbol_id);
                 }
-                AstKind::AssignmentTarget(target) if needs_variable_identifier => {
-                    return match target {
-                        AssignmentTarget::AssignmentTargetIdentifier(id) => {
-                            self.scoping().get_reference(id.reference_id()).symbol_id()
-                        }
-                        _ => None,
-                    };
+                AstKind::IdentifierReference(id) if needs_variable_identifier => {
+                    return self.scoping().get_reference(id.reference_id()).symbol_id();
                 }
                 AstKind::Program(_) => {
                     return None;
@@ -843,13 +848,8 @@ impl<'a> Symbol<'_, 'a> {
         loop {
             node = match node.kind() {
                 AstKind::TSTypeQuery(_) => return true,
-                AstKind::TSQualifiedName(_) | AstKind::TSTypeName(_) => {
-                    if let Some(parent) = self.nodes().parent_node(node.id()) {
-                        parent
-                    } else {
-                        debug_assert!(false);
-                        return false;
-                    }
+                AstKind::TSQualifiedName(_) | AstKind::IdentifierReference(_) => {
+                    self.nodes().parent_node(node.id())
                 }
                 _ => return false,
             };
@@ -860,8 +860,8 @@ impl<'a> Symbol<'_, 'a> {
     ///
     /// A variable scope is the closest ancestor scope (including `scope_id`
     /// itself) whose kind can *outlive* the current execution slice:
-    ///   * function‑like scopes  
-    ///   * class static blocks  
+    ///   * function‑like scopes
+    ///   * class static blocks
     ///   * TypeScript namespace/module blocks
     fn get_parent_variable_scope(&self, scope_id: ScopeId) -> ScopeId {
         self.scoping()

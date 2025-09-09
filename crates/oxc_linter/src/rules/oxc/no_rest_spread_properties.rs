@@ -1,4 +1,4 @@
-use oxc_ast::{AstKind, ast::AssignmentTarget};
+use oxc_ast::AstKind;
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
@@ -34,6 +34,14 @@ declare_oxc_lint!(
     /// ### What it does
     ///
     /// Disallow [Object Rest/Spread Properties](https://github.com/tc39/proposal-object-rest-spread#readme).
+    ///
+    /// ### Why is this bad?
+    ///
+    /// Object rest/spread properties are a relatively new JavaScript feature that may
+    /// not be supported in all target environments. If you need to support older
+    /// browsers or JavaScript engines that don't support these features, using them
+    /// can cause runtime errors. This rule helps maintain compatibility with older
+    /// environments by preventing the use of these modern syntax features.
     ///
     /// ### Examples
     ///
@@ -88,11 +96,7 @@ impl Rule for NoRestSpreadProperties {
     fn run<'a>(&self, node: &AstNode<'a>, ctx: &LintContext<'a>) {
         match node.kind() {
             AstKind::SpreadElement(spread_element) => {
-                if ctx
-                    .nodes()
-                    .parent_kind(node.id())
-                    .is_some_and(|parent| matches!(parent, AstKind::ObjectExpression(_)))
-                {
+                if matches!(ctx.nodes().parent_kind(node.id()), AstKind::ObjectExpression(_)) {
                     ctx.diagnostic(no_rest_spread_properties_diagnostic(
                         spread_element.span,
                         "object spread property",
@@ -101,11 +105,7 @@ impl Rule for NoRestSpreadProperties {
                 }
             }
             AstKind::BindingRestElement(rest_element) => {
-                if ctx
-                    .nodes()
-                    .parent_kind(node.id())
-                    .is_some_and(|parent| matches!(parent, AstKind::ObjectPattern(_)))
-                {
+                if matches!(ctx.nodes().parent_kind(node.id()), AstKind::ObjectPattern(_)) {
                     ctx.diagnostic(no_rest_spread_properties_diagnostic(
                         rest_element.span,
                         "object rest property",
@@ -113,10 +113,7 @@ impl Rule for NoRestSpreadProperties {
                     ));
                 }
             }
-            AstKind::AssignmentTarget(assign_target) => {
-                let AssignmentTarget::ObjectAssignmentTarget(object_assign) = assign_target else {
-                    return;
-                };
+            AstKind::ObjectAssignmentTarget(object_assign) => {
                 let Some(rest) = &object_assign.rest else {
                     return;
                 };

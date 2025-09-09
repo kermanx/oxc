@@ -92,8 +92,8 @@ impl fmt::Debug for ModuleRecord {
             .loaded_modules
             .read()
             .unwrap()
-            .iter()
-            .map(|(key, _)| (key.to_string()))
+            .keys()
+            .map(ToString::to_string)
             .reduce(|acc, key| format!("{acc}, {key}"))
             .unwrap_or_default();
         let loaded_modules = format!("{{ {loaded_modules} }}");
@@ -116,7 +116,7 @@ impl fmt::Debug for ModuleRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NameSpan {
     pub name: CompactStr,
-    span: Span,
+    pub span: Span,
 }
 
 impl NameSpan {
@@ -126,10 +126,6 @@ impl NameSpan {
 
     pub fn name(&self) -> &str {
         self.name.as_str()
-    }
-
-    pub fn span(&self) -> Span {
-        self.span
     }
 }
 
@@ -389,10 +385,15 @@ impl ExportExportName {
         matches!(self, Self::Null)
     }
 
+    /// Returns `true` if this is [`ExportExportName::Name`].
+    pub fn is_name(&self) -> bool {
+        matches!(self, Self::Name(_))
+    }
+
     /// Attempt to get the [`Span`] of this export name.
     pub fn span(&self) -> Option<Span> {
         match self {
-            Self::Name(name) => Some(name.span()),
+            Self::Name(name) => Some(name.span),
             Self::Default(span) => Some(*span),
             Self::Null => None,
         }

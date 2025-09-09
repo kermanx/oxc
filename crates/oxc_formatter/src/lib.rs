@@ -10,6 +10,7 @@
 )] // FIXME: all these needs to be fixed.
 
 mod generated {
+    pub mod ast_nodes;
     pub mod format;
 }
 mod formatter;
@@ -18,11 +19,26 @@ mod parentheses;
 mod utils;
 mod write;
 
-use oxc_allocator::Allocator;
-use oxc_ast::ast::Program;
+use std::{
+    cell::{Cell, UnsafeCell},
+    fmt::{self, Display},
+    marker::PhantomData,
+    mem::{self, transmute},
+    vec::IntoIter,
+};
 
-use crate::formatter::FormatContext;
+use oxc_allocator::{Address, Allocator, GetAddress};
+use oxc_ast::{AstKind, ast::*};
+use rustc_hash::{FxHashMap, FxHashSet};
+use write::FormatWrite;
+
 pub use crate::options::*;
+use crate::{
+    formatter::FormatContext,
+    generated::ast_nodes::{AstNode, AstNodes},
+};
+
+use self::formatter::prelude::tag::Label;
 
 pub struct Formatter<'a> {
     allocator: &'a Allocator,
@@ -36,15 +52,35 @@ impl<'a> Formatter<'a> {
     }
 
     pub fn build(mut self, program: &Program<'a>) -> String {
+        let parent = self.allocator.alloc(AstNodes::Dummy());
+        let program_node = AstNode::new(program, parent, self.allocator);
+
         let source_text = program.source_text;
         self.source_text = source_text;
-        let context = FormatContext::new(program, self.options);
+        let context = FormatContext::new(program, self.allocator, self.options);
         let formatted = formatter::format(
             program,
             context,
-            formatter::Arguments::new(&[formatter::Argument::new(program)]),
+            formatter::Arguments::new(&[formatter::Argument::new(&program_node)]),
         )
         .unwrap();
         formatted.print().unwrap().into_code()
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub(crate) enum JsLabels {
+    MemberChain,
+}
+
+impl Label for JsLabels {
+    fn id(&self) -> u64 {
+        *self as u64
+    }
+
+    fn debug_name(&self) -> &'static str {
+        match self {
+            Self::MemberChain => "MemberChain",
+        }
     }
 }

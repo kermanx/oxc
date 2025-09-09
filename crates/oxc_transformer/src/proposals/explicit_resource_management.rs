@@ -27,10 +27,10 @@
 //!
 //! ## Implementation
 //!
-//! Implementation based on [@babel/plugin-proposal-explicit-resource-management](https://babeljs.io/docs/babel-plugin-proposal-explicit-resource-management).
+//! Implementation based on [@babel/plugin-transform-explicit-resource-management](https://babeljs.io/docs/babel-plugin-transform-explicit-resource-management).
 //!
 //! ## References:
-//! * Babel plugin implementation: <https://github.com/babel/babel/blob/v7.26.9/packages/babel-plugin-proposal-explicit-resource-management>
+//! * Babel plugin implementation: <https://github.com/babel/babel/blob/v7.26.9/packages/babel-plugin-transform-explicit-resource-management>
 //! * Explicit Resource Management TC39 proposal: <https://github.com/tc39/proposal-explicit-resource-management>
 
 use std::mem;
@@ -42,9 +42,13 @@ use oxc_ast::{NONE, ast::*};
 use oxc_ecmascript::BoundNames;
 use oxc_semantic::{ScopeFlags, ScopeId, SymbolFlags};
 use oxc_span::{Atom, SPAN};
-use oxc_traverse::{BoundIdentifier, Traverse, TraverseCtx};
+use oxc_traverse::{BoundIdentifier, Traverse};
 
-use crate::{Helper, TransformCtx};
+use crate::{
+    Helper,
+    context::{TransformCtx, TraverseCtx},
+    state::TransformState,
+};
 
 pub struct ExplicitResourceManagement<'a, 'ctx> {
     ctx: &'ctx TransformCtx<'a>,
@@ -58,7 +62,7 @@ impl<'a, 'ctx> ExplicitResourceManagement<'a, 'ctx> {
     }
 }
 
-impl<'a> Traverse<'a> for ExplicitResourceManagement<'a, '_> {
+impl<'a> Traverse<'a, TransformState<'a>> for ExplicitResourceManagement<'a, '_> {
     /// Transform `for (using ... of ...)`, ready for `enter_statement` to do the rest.
     ///
     /// * `for (using x of y) {}` -> `for (const _x of y) { using x = _x; }`

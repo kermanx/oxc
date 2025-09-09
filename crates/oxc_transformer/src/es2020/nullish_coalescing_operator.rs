@@ -33,9 +33,12 @@ use oxc_ast::{NONE, ast::*};
 use oxc_semantic::{ScopeFlags, SymbolFlags};
 use oxc_span::SPAN;
 use oxc_syntax::operator::{AssignmentOperator, BinaryOperator, LogicalOperator};
-use oxc_traverse::{Ancestor, BoundIdentifier, Traverse, TraverseCtx};
+use oxc_traverse::{Ancestor, BoundIdentifier, Traverse};
 
-use crate::TransformCtx;
+use crate::{
+    context::{TransformCtx, TraverseCtx},
+    state::TransformState,
+};
 
 pub struct NullishCoalescingOperator<'a, 'ctx> {
     ctx: &'ctx TransformCtx<'a>,
@@ -47,7 +50,7 @@ impl<'a, 'ctx> NullishCoalescingOperator<'a, 'ctx> {
     }
 }
 
-impl<'a> Traverse<'a> for NullishCoalescingOperator<'a, '_> {
+impl<'a> Traverse<'a, TransformState<'a>> for NullishCoalescingOperator<'a, '_> {
     fn enter_expression(&mut self, expr: &mut Expression<'a>, ctx: &mut TraverseCtx<'a>) {
         // left ?? right
         if !matches!(expr, Expression::LogicalExpression(logical_expr) if logical_expr.operator == LogicalOperator::Coalesce)
@@ -157,7 +160,7 @@ impl<'a> NullishCoalescingOperator<'a, '_> {
                 ctx.ast.vec(),
                 ctx.ast.vec1(ctx.ast.statement_expression(SPAN, new_expr)),
             );
-            let arrow_function = ctx.ast.expression_arrow_function_with_scope_id_and_pure(
+            let arrow_function = ctx.ast.expression_arrow_function_with_scope_id_and_pure_and_pife(
                 SPAN,
                 true,
                 false,
@@ -166,6 +169,7 @@ impl<'a> NullishCoalescingOperator<'a, '_> {
                 NONE,
                 body,
                 current_scope_id,
+                false,
                 false,
             );
             // `(x) => x;` -> `((x) => x)();`

@@ -4,10 +4,12 @@ use std::{borrow::Cow, fmt::Debug, str};
 
 use cow_utils::CowUtils;
 use lazy_regex::{Captures, Lazy, Regex, lazy_regex, regex::Replacer};
+use proc_macro2::TokenStream;
+use quote::quote;
 use rustc_hash::FxHashSet;
 
 use crate::{
-    Generator, NAPI_PARSER_PACKAGE_PATH,
+    ALLOCATOR_CRATE_PATH, Generator, NAPI_OXLINT_PACKAGE_PATH, NAPI_PARSER_PACKAGE_PATH,
     codegen::{Codegen, DeriveId},
     derives::estree::{
         get_fieldless_variant_value, get_struct_field_name, should_flatten_field,
@@ -15,19 +17,39 @@ use crate::{
     },
     output::Output,
     schema::{
-        BoxDef, CellDef, Def, EnumDef, FieldDef, MetaType, OptionDef, PrimitiveDef, Schema,
-        StructDef, TypeDef, VecDef,
+        BoxDef, CellDef, Def, EnumDef, FieldDef, MetaType, OptionDef, PointerDef, PrimitiveDef,
+        Schema, StructDef, TypeDef, VecDef,
         extensions::layout::{GetLayout, GetOffset},
     },
-    utils::{FxIndexMap, format_cow, upper_case_first, write_it},
+    utils::{FxIndexMap, format_cow, number_lit, upper_case_first, write_it},
 };
 
 use super::define_generator;
 
+/// Offset of length field in `&str`
+const STR_LEN_OFFSET: u32 = 8;
+
+/// Bytes reserved for `malloc`'s metadata
+const MALLOC_RESERVED_SIZE: u32 = 16;
+
+/// Minimum alignment requirement for end of `Allocator`'s chunk
+const ALLOCATOR_CHUNK_END_ALIGN: u32 = 16;
+
+/// Size of block of memory used for raw transfer.
+/// This size includes metadata stored after the `Allocator` chunk which contains AST data.
+///
+/// Must be a multiple of [`ALLOCATOR_CHUNK_END_ALIGN`].
+/// 16 bytes less than 2 GiB, to allow 16 bytes for `malloc` metadata (like Bumpalo does).
+const BLOCK_SIZE: u32 = (1 << 31) - MALLOC_RESERVED_SIZE; // 2 GiB - 16 bytes
+const _: () = assert!(BLOCK_SIZE % ALLOCATOR_CHUNK_END_ALIGN == 0);
+
+/// Alignment of block of memory used for raw transfer.
+const BLOCK_ALIGN: u64 = 1 << 32; // 4 GiB
+
 // Offsets of `Vec`'s fields.
 // `Vec` is `#[repr(transparent)]` and `RawVec` is `#[repr(C)]`, so these offsets are fixed.
-const VEC_PTR_FIELD_OFFSET: usize = 0;
-const VEC_LEN_FIELD_OFFSET: usize = 8;
+pub(super) const VEC_PTR_FIELD_OFFSET: usize = 0;
+pub(super) const VEC_LEN_FIELD_OFFSET: usize = 8;
 
 /// Generator for raw transfer deserializer.
 pub struct RawTransferGenerator;
@@ -36,52 +58,43 @@ define_generator!(RawTransferGenerator);
 
 impl Generator for RawTransferGenerator {
     fn generate_many(&self, schema: &Schema, codegen: &Codegen) -> Vec<Output> {
-        let Codes { js, ts, .. } = generate_deserializers(schema, codegen);
+        let consts = get_constants(schema);
+
+        let Codes { js, ts, .. } = generate_deserializers(consts, schema, codegen);
+        let (constants_js, constants_rust) = generate_constants(consts);
+
         vec![
             Output::Javascript {
-                path: format!("{NAPI_PARSER_PACKAGE_PATH}/generated/deserialize/js.js"),
+                path: format!("{NAPI_PARSER_PACKAGE_PATH}/generated/deserialize/js.mjs"),
                 code: js,
             },
             Output::Javascript {
-                path: format!("{NAPI_PARSER_PACKAGE_PATH}/generated/deserialize/ts.js"),
+                path: format!("{NAPI_PARSER_PACKAGE_PATH}/generated/deserialize/ts.mjs"),
                 code: ts,
+            },
+            Output::Javascript {
+                path: format!("{NAPI_PARSER_PACKAGE_PATH}/generated/constants.mjs"),
+                code: constants_js.clone(),
+            },
+            Output::Javascript {
+                path: format!("{NAPI_OXLINT_PACKAGE_PATH}/src-js/generated/constants.mjs"),
+                code: constants_js,
+            },
+            Output::Rust {
+                path: format!("{NAPI_PARSER_PACKAGE_PATH}/src/generated/raw_transfer_constants.rs"),
+                tokens: constants_rust.clone(),
+            },
+            Output::Rust {
+                path: format!("{NAPI_OXLINT_PACKAGE_PATH}/src/generated/raw_transfer_constants.rs"),
+                tokens: constants_rust.clone(),
+            },
+            Output::Rust {
+                path: format!("{ALLOCATOR_CRATE_PATH}/src/generated/fixed_size_constants.rs"),
+                tokens: constants_rust,
             },
         ]
     }
 }
-
-/// Prelude to generated deserializer.
-/// Defines the main `deserialize` function.
-static PRELUDE: &str = "
-    'use strict';
-
-    module.exports = deserialize;
-
-    let uint8, uint32, float64, sourceText, sourceIsAscii, sourceLen;
-
-    const textDecoder = new TextDecoder('utf-8', { ignoreBOM: true }),
-        decodeStr = textDecoder.decode.bind(textDecoder),
-        { fromCodePoint } = String;
-
-    function deserialize(buffer, sourceTextInput, sourceLenInput) {
-        uint8 = buffer;
-        uint32 = new Uint32Array(buffer.buffer, buffer.byteOffset);
-        float64 = new Float64Array(buffer.buffer, buffer.byteOffset);
-
-        sourceText = sourceTextInput;
-        sourceLen = sourceLenInput;
-        sourceIsAscii = sourceText.length === sourceLen;
-
-        // (2 * 1024 * 1024 * 1024 - 16) >> 2
-        const metadataPos32 = 536870908;
-
-        const data = deserializeRawTransferData(uint32[metadataPos32]);
-
-        uint8 = uint32 = float64 = sourceText = undefined;
-
-        return data;
-    }
-";
 
 /// Container for generated code.
 struct Codes {
@@ -94,10 +107,39 @@ struct Codes {
 }
 
 /// Generate deserializer functions for all types.
-fn generate_deserializers(schema: &Schema, codegen: &Codegen) -> Codes {
+fn generate_deserializers(consts: Constants, schema: &Schema, codegen: &Codegen) -> Codes {
     let estree_derive_id = codegen.get_derive_id_by_name("ESTree");
 
-    let mut codes = Codes { js: PRELUDE.to_string(), ts: PRELUDE.to_string(), both: String::new() };
+    // Prelude to generated deserializer.
+    // Defines the main `deserialize` function.
+    let data_pointer_pos_32 = consts.data_pointer_pos / 4;
+
+    #[rustfmt::skip]
+    let prelude = format!("
+        let uint8, uint32, float64, sourceText, sourceIsAscii, sourceByteLen;
+
+        const textDecoder = new TextDecoder('utf-8', {{ ignoreBOM: true }}),
+            decodeStr = textDecoder.decode.bind(textDecoder),
+            {{ fromCodePoint }} = String;
+
+        export function deserialize(buffer, sourceTextInput, sourceByteLenInput) {{
+            uint8 = buffer;
+            uint32 = buffer.uint32;
+            float64 = buffer.float64;
+
+            sourceText = sourceTextInput;
+            sourceByteLen = sourceByteLenInput;
+            sourceIsAscii = sourceText.length === sourceByteLen;
+
+            const data = deserializeRawTransferData(uint32[{data_pointer_pos_32}]);
+
+            uint8 = uint32 = float64 = sourceText = undefined;
+
+            return data;
+        }}
+    ");
+
+    let mut codes = Codes { js: prelude.clone(), ts: prelude, both: String::new() };
 
     for type_def in &schema.types {
         match type_def {
@@ -112,16 +154,20 @@ fn generate_deserializers(schema: &Schema, codegen: &Codegen) -> Codes {
                 generate_primitive(primitive_def, &mut codes.both, schema);
             }
             TypeDef::Option(option_def) => {
-                generate_option(option_def, &mut codes.both, schema);
+                generate_option(option_def, &mut codes.both, estree_derive_id, schema);
             }
             TypeDef::Box(box_def) => {
-                generate_box(box_def, &mut codes.both, schema);
+                generate_box(box_def, &mut codes.both, estree_derive_id, schema);
             }
             TypeDef::Vec(vec_def) => {
-                generate_vec(vec_def, &mut codes.both, schema);
+                generate_vec(vec_def, &mut codes.both, estree_derive_id, schema);
             }
             TypeDef::Cell(_cell_def) => {
                 // No deserializers for `Cell`s - use inner type's deserializer
+            }
+            TypeDef::Pointer(_pointer_def) => {
+                // No deserializers for pointers - use `Box`'s deserializer.
+                // TODO: Need to make sure deserializer for `Box<T>` is generated.
             }
         }
     }
@@ -146,7 +192,7 @@ fn generate_struct(
     let fn_name = struct_def.deser_name(schema);
     let mut generator = StructDeserializerGenerator::new(is_ts, schema);
 
-    let body = if let Some(converter_name) = &struct_def.estree.via {
+    let body = struct_def.estree.via.as_deref().and_then(|converter_name| {
         let converter = schema.meta_by_name(converter_name);
         generator.apply_converter(converter, struct_def, 0).map(|value| {
             if generator.preamble.is_empty() {
@@ -161,13 +207,9 @@ fn generate_struct(
                 )
             }
         })
-    } else {
-        None
-    };
+    });
 
-    let body = if let Some(body) = body {
-        body
-    } else {
+    let body = body.unwrap_or_else(|| {
         let mut preamble_str = String::new();
         let mut fields_str = String::new();
 
@@ -207,7 +249,7 @@ fn generate_struct(
             }};
         "
         )
-    };
+    });
 
     #[rustfmt::skip]
     write_it!(code, "
@@ -492,8 +534,9 @@ fn generate_primitive(primitive_def: &PrimitiveDef, code: &mut String, schema: &
         ",
         "f64" => "return float64[pos >> 3];",
         "&str" => STR_DESERIALIZER_BODY,
-        // Reuse deserializers for zeroed types
+        // Reuse deserializers for zeroed and atomic types
         type_name if type_name.starts_with("NonZero") => return,
+        type_name if type_name.starts_with("Atomic") => return,
         type_name => panic!("Cannot generate deserializer for primitive `{type_name}`"),
     };
 
@@ -513,7 +556,7 @@ static STR_DESERIALIZER_BODY: &str = "
     if (len === 0) return '';
 
     pos = uint32[pos32];
-    if (sourceIsAscii && pos < sourceLen) return sourceText.substr(pos, len);
+    if (sourceIsAscii && pos < sourceByteLen) return sourceText.substr(pos, len);
 
     // Longer strings use `TextDecoder`
     // TODO: Find best switch-over point
@@ -537,9 +580,18 @@ static STR_DESERIALIZER_BODY: &str = "
 ";
 
 /// Generate deserialize function for an `Option`.
-fn generate_option(option_def: &OptionDef, code: &mut String, schema: &Schema) {
-    let fn_name = option_def.deser_name(schema);
+fn generate_option(
+    option_def: &OptionDef,
+    code: &mut String,
+    estree_derive_id: DeriveId,
+    schema: &Schema,
+) {
     let inner_type = option_def.inner_type(schema);
+    if should_skip_innermost_type(inner_type, estree_derive_id, schema) {
+        return;
+    }
+
+    let fn_name = option_def.deser_name(schema);
     let inner_fn_name = inner_type.deser_name(schema);
     let inner_layout = inner_type.layout_64();
 
@@ -578,9 +630,14 @@ fn generate_option(option_def: &OptionDef, code: &mut String, schema: &Schema) {
 }
 
 /// Generate deserialize function for a `Box`.
-fn generate_box(box_def: &BoxDef, code: &mut String, schema: &Schema) {
+fn generate_box(box_def: &BoxDef, code: &mut String, estree_derive_id: DeriveId, schema: &Schema) {
+    let inner_type = box_def.inner_type(schema);
+    if should_skip_innermost_type(inner_type, estree_derive_id, schema) {
+        return;
+    }
+
     let fn_name = box_def.deser_name(schema);
-    let inner_fn_name = box_def.inner_type(schema).deser_name(schema);
+    let inner_fn_name = inner_type.deser_name(schema);
 
     #[rustfmt::skip]
     write_it!(code, "
@@ -591,9 +648,13 @@ fn generate_box(box_def: &BoxDef, code: &mut String, schema: &Schema) {
 }
 
 /// Generate deserialize function for a `Vec`.
-fn generate_vec(vec_def: &VecDef, code: &mut String, schema: &Schema) {
-    let fn_name = vec_def.deser_name(schema);
+fn generate_vec(vec_def: &VecDef, code: &mut String, estree_derive_id: DeriveId, schema: &Schema) {
     let inner_type = vec_def.inner_type(schema);
+    if should_skip_innermost_type(inner_type, estree_derive_id, schema) {
+        return;
+    }
+
+    let fn_name = vec_def.deser_name(schema);
     let inner_fn_name = inner_type.deser_name(schema);
     let inner_type_size = inner_type.layout_64().size;
 
@@ -604,10 +665,10 @@ fn generate_vec(vec_def: &VecDef, code: &mut String, schema: &Schema) {
     write_it!(code, "
         function {fn_name}(pos) {{
             const arr = [],
-                pos32 = pos >> 2,
-                len = uint32[{len_pos32}];
+                pos32 = pos >> 2;
             pos = uint32[{ptr_pos32}];
-            for (let i = 0; i < len; i++) {{
+            const endPos = pos + uint32[{len_pos32}] * {inner_type_size};
+            while (pos !== endPos) {{
                 arr.push({inner_fn_name}(pos));
                 pos += {inner_type_size};
             }}
@@ -616,11 +677,28 @@ fn generate_vec(vec_def: &VecDef, code: &mut String, schema: &Schema) {
     ");
 }
 
+/// Check if innermost type does not require a deserializer.
+pub(super) fn should_skip_innermost_type(
+    type_def: &TypeDef,
+    estree_derive_id: DeriveId,
+    schema: &Schema,
+) -> bool {
+    match type_def.innermost_type(schema) {
+        TypeDef::Struct(struct_def) => {
+            !struct_def.generates_derive(estree_derive_id) || struct_def.estree.skip
+        }
+        TypeDef::Enum(enum_def) => {
+            !enum_def.generates_derive(estree_derive_id) || enum_def.estree.skip
+        }
+        _ => false,
+    }
+}
+
 /// Generate pos offset string.
 ///
 /// * If `offset == 0` -> `pos`.
 /// * Otherwise -> `pos + <offset>` (e.g. `pos + 8`).
-fn pos_offset<O>(offset: O) -> Cow<'static, str>
+pub(super) fn pos_offset<O>(offset: O) -> Cow<'static, str>
 where
     O: TryInto<u64>,
     <O as TryInto<u64>>::Error: Debug,
@@ -635,7 +713,7 @@ where
 /// * If `offset == 0` -> `pos >> <shift>` (e.g. `pos >> 2`).
 /// * If `shift == 0` -> `pos + <offset>` (e.g. `pos + 8`).
 /// * Otherwise -> `(pos + <offset>) >> <shift>` (e.g. `(pos + 8) >> 2`).
-fn pos_offset_shift<O, S>(offset: O, shift: S) -> Cow<'static, str>
+pub(super) fn pos_offset_shift<O, S>(offset: O, shift: S) -> Cow<'static, str>
 where
     O: TryInto<u64>,
     <O as TryInto<u64>>::Error: Debug,
@@ -656,7 +734,7 @@ where
 ///
 /// * If `offset == 0` -> `pos32`.
 /// * Otherwise -> `pos32 + <offset>` (e.g. `pos32 + 4`).
-fn pos32_offset<O>(offset: O) -> Cow<'static, str>
+pub(super) fn pos32_offset<O>(offset: O) -> Cow<'static, str>
 where
     O: TryInto<u64>,
     <O as TryInto<u64>>::Error: Debug,
@@ -780,12 +858,12 @@ impl Replacer for PosOffsetReplacer<'_, '_> {
 
         let mut field_names = caps.get(2).unwrap().as_str().split('.');
         let field_name = field_names.next().unwrap();
-        let field = struct_def.fields.iter().find(|field| field.name() == field_name).unwrap();
+        let field = struct_def.field_by_name(field_name);
         let mut offset = self.struct_offset + field.offset_64();
         let mut type_def = field.type_def(self.schema);
         for field_name in field_names {
             let struct_def = type_def.as_struct().unwrap();
-            let field = struct_def.fields.iter().find(|field| field.name() == field_name).unwrap();
+            let field = struct_def.field_by_name(field_name);
             offset += field.offset_64();
             type_def = field.type_def(self.schema);
         }
@@ -845,7 +923,7 @@ impl Replacer for IfJsReplacer {
 }
 
 /// Trait to get deserializer function name for a type.
-trait DeserializeFunctionName {
+pub(super) trait DeserializeFunctionName {
     fn deser_name(&self, schema: &Schema) -> String {
         format!("deserialize{}", self.plain_name(schema))
     }
@@ -863,6 +941,7 @@ impl DeserializeFunctionName for TypeDef {
             TypeDef::Box(def) => def.plain_name(schema),
             TypeDef::Vec(def) => def.plain_name(schema),
             TypeDef::Cell(def) => def.plain_name(schema),
+            TypeDef::Pointer(def) => def.plain_name(schema),
         }
     }
 }
@@ -903,6 +982,9 @@ impl DeserializeFunctionName for PrimitiveDef {
         } else if let Some(type_name) = type_name.strip_prefix("NonZero") {
             // Use zeroed type's deserializer for `NonZero*` types
             Cow::Borrowed(type_name)
+        } else if let Some(type_name) = type_name.strip_prefix("Atomic") {
+            // Use standard type's deserializer for `Atomic*` types
+            Cow::Borrowed(type_name)
         } else {
             upper_case_first(type_name)
         }
@@ -913,5 +995,134 @@ impl DeserializeFunctionName for CellDef {
     fn plain_name<'s>(&'s self, schema: &'s Schema) -> Cow<'s, str> {
         // `Cell`s use same deserializer as inner type, as layout is identical
         self.inner_type(schema).plain_name(schema)
+    }
+}
+
+impl DeserializeFunctionName for PointerDef {
+    fn plain_name<'s>(&'s self, schema: &'s Schema) -> Cow<'s, str> {
+        // Pointers use same deserializer as `Box`, as layout is identical
+        format_cow!("Box{}", self.inner_type(schema).plain_name(schema))
+    }
+}
+
+/// Constants for position of fields in buffer which deserialization starts from.
+#[derive(Clone, Copy)]
+struct Constants {
+    /// Size of buffer in bytes
+    buffer_size: u32,
+    /// Offset within buffer of `u32` containing position of `RawTransferData`
+    data_pointer_pos: u32,
+    /// Offset within buffer of `bool` indicating if AST is TS or JS
+    is_ts_pos: u32,
+    /// Offset of `Program` in buffer, relative to position of `RawTransferData`
+    program_offset: u32,
+    /// Offset of `u32` source text length, relative to position of `Program`
+    source_len_offset: u32,
+    /// Size of `RawTransferData` in bytes
+    raw_metadata_size: u32,
+}
+
+/// Generate constants file.
+fn generate_constants(consts: Constants) -> (String, TokenStream) {
+    let Constants {
+        buffer_size,
+        data_pointer_pos,
+        is_ts_pos,
+        program_offset,
+        source_len_offset,
+        raw_metadata_size,
+    } = consts;
+
+    let data_pointer_pos_32 = data_pointer_pos / 4;
+
+    #[rustfmt::skip]
+    let js_output = format!("
+        export const BUFFER_SIZE = {buffer_size};
+        export const BUFFER_ALIGN = {BLOCK_ALIGN};
+        export const DATA_POINTER_POS_32 = {data_pointer_pos_32};
+        export const IS_TS_FLAG_POS = {is_ts_pos};
+        export const PROGRAM_OFFSET = {program_offset};
+        export const SOURCE_LEN_OFFSET = {source_len_offset};
+    ");
+
+    let block_size = number_lit(BLOCK_SIZE);
+    let block_align = number_lit(BLOCK_ALIGN);
+    let buffer_size = number_lit(buffer_size);
+    let raw_metadata_size = number_lit(raw_metadata_size);
+    let rust_output = quote! {
+        #![expect(clippy::unreadable_literal)]
+        #![allow(dead_code)]
+
+        ///@@line_break
+        pub const BLOCK_SIZE: usize = #block_size;
+        pub const BLOCK_ALIGN: usize = #block_align;
+        pub const BUFFER_SIZE: usize = #buffer_size;
+        pub const RAW_METADATA_SIZE: usize = #raw_metadata_size;
+    };
+
+    (js_output, rust_output)
+}
+
+/// Calculate constants.
+fn get_constants(schema: &Schema) -> Constants {
+    let raw_metadata_struct = schema.type_by_name("RawTransferMetadata").as_struct().unwrap();
+    let raw_metadata2_struct = schema.type_by_name("RawTransferMetadata2").as_struct().unwrap();
+
+    // Check layout and fields of `RawTransferMetadata` and `RawTransferMetadata2` are identical
+    assert_eq!(raw_metadata_struct.layout, raw_metadata2_struct.layout);
+    assert_eq!(raw_metadata_struct.fields.len(), raw_metadata2_struct.fields.len());
+
+    let mut data_offset_field = None;
+    let mut is_ts_field = None;
+    for (field1, field2) in raw_metadata_struct.fields.iter().zip(&raw_metadata2_struct.fields) {
+        assert_eq!(field1.name(), field2.name());
+        assert_eq!(field1.type_id, field2.type_id);
+        assert_eq!(field1.offset_64(), field2.offset_64());
+        match field1.name() {
+            "data_offset" => data_offset_field = Some(field1),
+            "is_ts" => is_ts_field = Some(field1),
+            _ => {}
+        }
+    }
+    let data_offset_field = data_offset_field.unwrap();
+    let is_ts_field = is_ts_field.unwrap();
+
+    let raw_metadata_size = raw_metadata_struct.layout_64().size;
+
+    // Round up to multiple of `ALLOCATOR_CHUNK_END_ALIGN`
+    let fixed_metadata_struct =
+        schema.type_by_name("FixedSizeAllocatorMetadata").as_struct().unwrap();
+    let fixed_metadata_size =
+        fixed_metadata_struct.layout_64().size.next_multiple_of(ALLOCATOR_CHUNK_END_ALIGN);
+
+    let buffer_size = BLOCK_SIZE - fixed_metadata_size;
+
+    // Get offsets of data within buffer
+    let raw_metadata_pos = buffer_size - raw_metadata_size;
+    let data_pointer_pos = raw_metadata_pos + data_offset_field.offset_64();
+    let is_ts_pos = raw_metadata_pos + is_ts_field.offset_64();
+
+    let program_offset = schema
+        .type_by_name("RawTransferData")
+        .as_struct()
+        .unwrap()
+        .field_by_name("program")
+        .offset_64();
+
+    let source_len_offset = schema
+        .type_by_name("Program")
+        .as_struct()
+        .unwrap()
+        .field_by_name("source_text")
+        .offset_64()
+        + STR_LEN_OFFSET;
+
+    Constants {
+        buffer_size,
+        data_pointer_pos,
+        is_ts_pos,
+        program_offset,
+        source_len_offset,
+        raw_metadata_size,
     }
 }

@@ -13,6 +13,7 @@ const MIN_ESCAPED_TEMPLATE_LIT_LEN: usize = 16;
 
 /// Convert `char` to UTF-8 bytes array.
 const fn to_bytes<const N: usize>(ch: char) -> [u8; N] {
+    assert!(ch.len_utf8() == N);
     let mut bytes = [0u8; N];
     ch.encode_utf8(&mut bytes);
     bytes
@@ -389,7 +390,6 @@ impl<'a> Lexer<'a> {
     pub(crate) fn next_template_substitution_tail(&mut self) -> Token {
         self.token.set_start(self.offset() - 1);
         let kind = self.read_template_literal(Kind::TemplateMiddle, Kind::TemplateTail);
-        self.lookahead.clear();
         self.finish_next(kind)
     }
 

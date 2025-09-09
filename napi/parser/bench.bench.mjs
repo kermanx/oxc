@@ -1,7 +1,17 @@
-import { writeFile } from 'fs/promises';
-import { join as pathJoin } from 'path';
-import { bench } from 'vitest';
-import { parseSync } from './index.js';
+import { writeFile } from 'node:fs/promises';
+import { join as pathJoin } from 'node:path';
+import { bench, describe } from 'vitest';
+import { parseSyncRaw } from './bindings.mjs';
+import { parseAsync, parseSync } from './index.mjs';
+
+// Internals
+import { DATA_POINTER_POS_32, PROGRAM_OFFSET } from './generated/constants.mjs';
+import { deserialize as deserializeJS } from './generated/deserialize/js.mjs';
+import { deserialize as deserializeTS } from './generated/deserialize/ts.mjs';
+import { walkProgram } from './generated/lazy/walk.mjs';
+import { isJsAst, prepareRaw, returnBufferToCache } from './raw-transfer/common.mjs';
+import { TOKEN } from './raw-transfer/lazy-common.mjs';
+import { getVisitorsArr, Visitor } from './raw-transfer/visitor.mjs';
 
 // Same fixtures as used in Rust parser benchmarks
 let fixtureUrls = [
@@ -49,15 +59,145 @@ const fixtures = await Promise.all(fixtureUrls.map(async (url) => {
 
 // Run benchmarks
 for (const { filename, code } of fixtures) {
-  benchStandard(`parser_napi[${filename}]`, () => {
-    const ret = parseSync(filename, code);
-    // Read returned object's properties to execute getters which deserialize
-    const { program, comments, module, errors } = ret;
-  });
+  // oxlint-disable-next-line jest/valid-title
+  describe(filename, () => {
+    benchStandard('parser_napi', () => {
+      const ret = parseSync(filename, code);
+      // Read returned object's properties to execute getters which deserialize
+      // oxlint-disable-next-line no-unused-vars
+      const { program, comments, module, errors } = ret;
+    });
 
-  benchRaw(`parser_napi_raw[${filename}]`, () => {
-    const ret = parseSync(filename, code, { experimentalRawTransfer: true });
-    // Read returned object's properties to execute getters
-    const { program, comments, module, errors } = ret;
+    benchRaw('parser_napi_raw', () => {
+      const ret = parseSync(filename, code, { experimentalRawTransfer: true });
+      // Read returned object's properties to execute getters
+      // oxlint-disable-next-line no-unused-vars
+      const { program, comments, module, errors } = ret;
+    });
+
+    benchStandard('parser_napi_async', async () => {
+      const ret = await parseAsync(filename, code);
+      // Read returned object's properties to execute getters which deserialize
+      // oxlint-disable-next-line no-unused-vars
+      const { program, comments, module, errors } = ret;
+    });
+
+    benchRaw('parser_napi_async_raw', async () => {
+      const ret = await parseAsync(filename, code, { experimentalRawTransfer: true });
+      // Read returned object's properties to execute getters
+      // oxlint-disable-next-line no-unused-vars
+      const { program, comments, module, errors } = ret;
+    });
+
+    benchRaw('parser_napi_raw_no_deser', () => {
+      const { buffer, sourceByteLen } = prepareRaw(code);
+      parseSyncRaw(filename, buffer, sourceByteLen, {});
+      returnBufferToCache(buffer);
+    });
+
+    // Prepare buffer but don't deserialize
+    const { buffer, sourceByteLen } = prepareRaw(code);
+    parseSyncRaw(filename, buffer, sourceByteLen, {});
+    const deserialize = isJsAst(buffer) ? deserializeJS : deserializeTS;
+
+    benchRaw('parser_napi_raw_deser_only', () => {
+      deserialize(buffer, code, sourceByteLen);
+    });
+
+    // oxlint-disable-next-line no-unused-vars
+    let debuggerCount = 0;
+    const debuggerVisitor = new Visitor({
+      DebuggerStatement(_debuggerStmt) {
+        debuggerCount++;
+      },
+    });
+
+    // oxlint-disable-next-line no-unused-vars
+    let identCount = 0;
+    const identVisitor = new Visitor({
+      BindingIdentifier(_ident) {
+        identCount++;
+      },
+      IdentifierReference(_ident) {
+        identCount++;
+      },
+      IdentifierName(_ident) {
+        identCount++;
+      },
+    });
+
+    // These 4 currently not working, due to 2 instances of `Visitor` getting loaded via CJS and ESM.
+    // TODO: Fix it.
+    /*
+    benchRaw('parser_napi_raw_lazy_visit(debugger)', () => {
+      const { visit, dispose } = parseSync(filename, code, { experimentalLazy: true });
+      debuggerCount = 0;
+      visit(debuggerVisitor);
+      dispose();
+    });
+
+    benchRaw('parser_napi_raw_lazy_visit(ident)', () => {
+      const { visit, dispose } = parseSync(filename, code, { experimentalLazy: true });
+      identCount = 0;
+      visit(identVisitor);
+      dispose();
+    });
+
+    benchRaw('parser_napi_raw_lazy_visitor(debugger)', () => {
+      const { visit, dispose } = parseSync(filename, code, { experimentalLazy: true });
+      debuggerCount = 0;
+      const debuggerVisitor = new Visitor({
+        DebuggerStatement(_debuggerStmt) {
+          debuggerCount++;
+        },
+      });
+      visit(debuggerVisitor);
+      dispose();
+    });
+
+    benchRaw('parser_napi_raw_lazy_visitor(ident)', () => {
+      const { visit, dispose } = parseSync(filename, code, { experimentalLazy: true });
+      identCount = 0;
+      const identVisitor = new Visitor({
+        BindingIdentifier(_ident) {
+          identCount++;
+        },
+        IdentifierReference(_ident) {
+          identCount++;
+        },
+        IdentifierName(_ident) {
+          identCount++;
+        },
+      });
+      visit(identVisitor);
+      dispose();
+    });
+    */
+
+    const debuggerVisitorsArr = getVisitorsArr(debuggerVisitor);
+    const identVisitorsArr = getVisitorsArr(identVisitor);
+
+    const ast = {
+      buffer,
+      sourceText: code,
+      sourceByteLen,
+      sourceIsAscii: code.length === sourceByteLen,
+      nodes: null, // Initialized in bench functions
+      token: TOKEN,
+    };
+
+    const programPos = buffer.uint32[DATA_POINTER_POS_32] + PROGRAM_OFFSET;
+
+    benchRaw('parser_napi_raw_lazy_visit_only(debugger)', () => {
+      ast.nodes = new Map();
+      debuggerCount = 0;
+      walkProgram(programPos, ast, debuggerVisitorsArr);
+    });
+
+    benchRaw('parser_napi_raw_lazy_visit_only(ident)', () => {
+      ast.nodes = new Map();
+      identCount = 0;
+      walkProgram(programPos, ast, identVisitorsArr);
+    });
   });
 }

@@ -1,6 +1,8 @@
 use oxc_syntax::es_target::ESTarget;
 
-#[derive(Debug, Clone, Copy)]
+pub use oxc_ecmascript::side_effects::PropertyReadSideEffects;
+
+#[derive(Debug, Clone)]
 pub struct CompressOptions {
     /// Set desired EcmaScript standard version for output.
     ///
@@ -12,9 +14,6 @@ pub struct CompressOptions {
     /// Default `ESTarget::ESNext`
     pub target: ESTarget,
 
-    /// Keep function / class names.
-    pub keep_names: CompressOptionsKeepNames,
-
     /// Remove `debugger;` statements.
     ///
     /// Default `true`
@@ -24,12 +23,36 @@ pub struct CompressOptions {
     ///
     /// Default `false`
     pub drop_console: bool,
+
+    /// Join consecutive var, let and const statements.
+    ///
+    /// Default `true`
+    pub join_vars: bool,
+
+    /// Join consecutive simple statements using the comma operator.
+    ///
+    /// `a; b` -> `a, b`
+    ///
+    /// Default `true`
+    pub sequences: bool,
+
+    /// Drop unreferenced functions and variables.
+    pub unused: CompressOptionsUnused,
+
+    /// Keep function / class names.
+    pub keep_names: CompressOptionsKeepNames,
+
+    /// Treeshake Options .
+    /// <https://rollupjs.org/configuration-options/#treeshake>
+    pub treeshake: TreeShakeOptions,
+
+    /// Limit the maximum number of iterations for debugging purpose.
+    pub max_iterations: Option<u8>,
 }
 
-#[expect(clippy::derivable_impls)]
 impl Default for CompressOptions {
     fn default() -> Self {
-        Self { drop_console: false, ..Self::smallest() }
+        Self::smallest()
     }
 }
 
@@ -39,7 +62,12 @@ impl CompressOptions {
             target: ESTarget::ESNext,
             keep_names: CompressOptionsKeepNames::all_false(),
             drop_debugger: true,
-            drop_console: true,
+            drop_console: false,
+            join_vars: true,
+            sequences: true,
+            unused: CompressOptionsUnused::Remove,
+            treeshake: TreeShakeOptions::default(),
+            max_iterations: None,
         }
     }
 
@@ -49,8 +77,35 @@ impl CompressOptions {
             keep_names: CompressOptionsKeepNames::all_true(),
             drop_debugger: false,
             drop_console: false,
+            join_vars: true,
+            sequences: true,
+            unused: CompressOptionsUnused::Keep,
+            treeshake: TreeShakeOptions::default(),
+            max_iterations: None,
         }
     }
+
+    pub fn dce() -> Self {
+        Self {
+            target: ESTarget::ESNext,
+            keep_names: CompressOptionsKeepNames::all_true(),
+            drop_debugger: false,
+            drop_console: false,
+            join_vars: false,
+            sequences: false,
+            unused: CompressOptionsUnused::Remove,
+            treeshake: TreeShakeOptions::default(),
+            max_iterations: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
+pub enum CompressOptionsUnused {
+    #[default]
+    Remove,
+    KeepAssign,
+    Keep,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -85,5 +140,54 @@ impl CompressOptionsKeepNames {
 
     pub fn class_only() -> Self {
         Self { function: false, class: true }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TreeShakeOptions {
+    /// Whether to respect the pure annotations.
+    ///
+    /// Pure annotations are the comments that marks that a expression is pure.
+    /// For example, `/* @__PURE__ */`, `/* #__NO_SIDE_EFFECTS__ */`.
+    ///
+    /// <https://rollupjs.org/configuration-options/#treeshake-annotations>
+    ///
+    /// Default `true`
+    pub annotations: bool,
+
+    /// Whether to treat this function call as pure.
+    ///
+    /// This function is called for normal function calls, new calls, and
+    /// tagged template calls (`foo()`, `new Foo()`, ``foo`b` ``).
+    ///
+    /// <https://rollupjs.org/configuration-options/#treeshake-manualpurefunctions>
+    pub manual_pure_functions: Vec<String>,
+
+    /// Whether property read accesses have side effects.
+    ///
+    /// <https://rollupjs.org/configuration-options/#treeshake-propertyreadsideeffects>
+    ///
+    /// Default [PropertyReadSideEffects::All]
+    pub property_read_side_effects: PropertyReadSideEffects,
+
+    /// Whether accessing a global variable has side effects.
+    ///
+    /// Accessing a non-existing global variable will throw an error.
+    /// Global variable may be a getter that has side effects.
+    ///
+    /// <https://rollupjs.org/configuration-options/#treeshake-unknownglobalsideeffects>
+    ///
+    /// Default `true`
+    pub unknown_global_side_effects: bool,
+}
+
+impl Default for TreeShakeOptions {
+    fn default() -> Self {
+        Self {
+            annotations: true,
+            manual_pure_functions: vec![],
+            property_read_side_effects: PropertyReadSideEffects::default(),
+            unknown_global_side_effects: true,
+        }
     }
 }

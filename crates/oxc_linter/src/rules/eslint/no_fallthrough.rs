@@ -87,11 +87,11 @@ declare_oxc_lint!(
     ///
     /// ```js
     /// switch(foo) {
-    ///     case 1:
-    ///     doSomething();
+    ///   case 1:
+    ///   doSomething();
     ///
     /// case 2:
-    ///     doSomethingElse();
+    ///   doSomethingElse();
     /// }
     /// ```
     ///
@@ -101,12 +101,12 @@ declare_oxc_lint!(
     ///
     /// ```js
     /// switch(foo) {
-    ///     case 1:
-    ///         doSomething();
-    ///         break;
+    ///   case 1:
+    ///     doSomething();
+    ///     break;
     ///
-    ///     case 2:
-    ///         doSomethingElse();
+    ///   case 2:
+    ///     doSomethingElse();
     /// }
     /// ```
     ///
@@ -118,41 +118,41 @@ declare_oxc_lint!(
     ///
     /// ```js
     /// switch(foo) {
-    ///     case 1:
-    ///         doSomething();
-    ///         // falls through
+    ///   case 1:
+    ///     doSomething();
+    ///     // falls through
     ///
-    ///     case 2:
-    ///         doSomethingElse();
+    ///   case 2:
+    ///     doSomethingElse();
     /// }
     ///
     /// switch(foo) {
-    ///     case 1:
-    ///         doSomething();
-    ///         // fall through
+    ///   case 1:
+    ///     doSomething();
+    ///     // fall through
     ///
-    ///     case 2:
-    ///         doSomethingElse();
+    ///   case 2:
+    ///     doSomethingElse();
     /// }
     ///
     /// switch(foo) {
-    ///     case 1:
-    ///         doSomething();
-    ///         // fallsthrough
+    ///   case 1:
+    ///     doSomething();
+    ///     // fallsthrough
     ///
-    ///     case 2:
-    ///         doSomethingElse();
+    ///   case 2:
+    ///     doSomethingElse();
     /// }
     ///
     /// switch(foo) {
-    ///     case 1: {
-    ///         doSomething();
-    ///         // falls through
-    ///     }
+    ///   case 1: {
+    ///     doSomething();
+    ///     // falls through
+    ///   }
     ///
-    ///     case 2: {
-    ///         doSomethingElse();
-    ///     }
+    ///   case 2: {
+    ///     doSomethingElse();
+    ///   }
     /// }
     /// ```
     ///
@@ -164,79 +164,75 @@ declare_oxc_lint!(
     ///
     /// Examples of **incorrect** code for this rule:
     /// ```js
-    /// /*oxlint no-fallthrough: "error"*/
-    ///
     /// switch(foo) {
-    ///     case 1:
-    ///         doSomething();
+    ///   case 1:
+    ///     doSomething();
     ///
-    ///     case 2:
-    ///         doSomething();
+    ///   case 2:
+    ///     doSomething();
     /// }
     /// ```
     ///
     /// Examples of **correct** code for this rule:
     /// ```js
-    /// /*oxlint no-fallthrough: "error"*/
-    ///
     /// switch(foo) {
-    ///     case 1:
-    ///         doSomething();
-    ///         break;
+    ///   case 1:
+    ///     doSomething();
+    ///     break;
     ///
-    ///     case 2:
-    ///         doSomething();
+    ///   case 2:
+    ///     doSomething();
     /// }
     ///
     /// function bar(foo) {
-    ///     switch(foo) {
-    ///         case 1:
-    ///             doSomething();
-    ///             return;
-    ///
-    ///         case 2:
-    ///             doSomething();
-    ///     }
-    /// }
-    ///
-    /// switch(foo) {
+    ///   switch(foo) {
     ///     case 1:
-    ///         doSomething();
-    ///         throw new Error("Boo!");
+    ///       doSomething();
+    ///       return;
     ///
     ///     case 2:
-    ///         doSomething();
+    ///       doSomething();
+    ///   }
     /// }
     ///
     /// switch(foo) {
-    ///     case 1:
-    ///     case 2:
-    ///         doSomething();
+    ///   case 1:
+    ///     doSomething();
+    ///     throw new Error("Boo!");
+    ///
+    ///   case 2:
+    ///     doSomething();
     /// }
     ///
     /// switch(foo) {
-    ///     case 1: case 2:
-    ///         doSomething();
+    ///   case 1:
+    ///   case 2:
+    ///     doSomething();
     /// }
     ///
     /// switch(foo) {
-    ///     case 1:
-    ///         doSomething();
-    ///         // falls through
-    ///
-    ///     case 2:
-    ///         doSomething();
+    ///   case 1: case 2:
+    ///     doSomething();
     /// }
     ///
     /// switch(foo) {
-    ///     case 1: {
-    ///         doSomething();
-    ///         // falls through
-    ///     }
+    ///   case 1:
+    ///     doSomething();
+    ///     // falls through
     ///
-    ///     case 2: {
-    ///         doSomethingElse();
-    ///     }
+    ///   case 2:
+    ///     doSomething();
+    /// }
+    ///
+    /// switch(foo) {
+    ///   case 1: {
+    ///     doSomething();
+    ///     // falls through
+    ///   }
+    ///
+    ///   case 2: {
+    ///     doSomethingElse();
+    ///   }
     /// }
     /// ```
     ///
@@ -278,42 +274,29 @@ impl Rule for NoFallthrough {
         let fallthroughs: FxHashSet<BlockNodeId> = neighbors_filtered_by_edge_weight(
             graph,
             switch_id,
-            &|e| match e {
+            &|edge_type| match edge_type {
                 EdgeType::Normal | EdgeType::Jump | EdgeType::Error(ErrorEdgeKind::Explicit) => {
                     None
                 }
                 _ => Some(None),
             },
-            &mut |node, last_cond: Option<BlockNodeId>| {
-                let node = *node;
-
+            &mut |&node, last_cond: Option<BlockNodeId>| {
                 if node == switch_id {
-                    return (last_cond, true);
-                }
-                if node == default_or_exit {
-                    return (last_cond, false);
-                }
-                if tests.contains_key(&node) {
-                    return (last_cond, true);
-                }
-                if cfg.basic_block(node).is_unreachable() {
-                    return (None, false);
-                }
+                    (last_cond, true)
+                } else if node == default_or_exit {
+                    (last_cond, false)
+                } else if tests.contains_key(&node) {
+                    (last_cond, true)
+                } else if cfg.basic_block(node).is_unreachable() {
+                    (None, false)
+                } else {
+                    let fallthrough = graph
+                        .edges_directed(node, Direction::Outgoing)
+                        .map(|edge| edge.target())
+                        .find(|target| Some(*target) == default || tests.contains_key(target));
 
-                let fallthrough = graph
-                    .edges_directed(node, Direction::Outgoing)
-                    .find(|it| {
-                        let target = it.target();
-                        if let Some(default) = default {
-                            if default == target {
-                                return true;
-                            }
-                        }
-                        tests.contains_key(&target)
-                    })
-                    .map(|e| e.target());
-
-                (fallthrough, fallthrough.is_none())
+                    (fallthrough, fallthrough.is_none())
+                }
             },
         )
         .into_iter()
@@ -454,12 +437,12 @@ fn get_switch_semantic_cases(
     let cfg = ctx.cfg();
     let graph = cfg.graph();
     let has_default = switch.cases.iter().any(SwitchCase::is_default_case);
-    let (tests, exit) = graph
+    let (mut cfg_ids, tests, exit) = graph
         .edges_directed(node.cfg_id(), Direction::Outgoing)
-        .fold((Vec::new(), None), |(mut conds, exit), it| {
+        .fold((Vec::new(), Vec::new(), None), |(mut cfg_ids, mut conds, exit), it| {
             let target = it.target();
             if !matches!(it.weight(), EdgeType::Normal) {
-                (conds, exit)
+                (cfg_ids, conds, exit)
             } else if cfg
                 .basic_block(target)
                 .instructions()
@@ -478,27 +461,24 @@ fn get_switch_semantic_cases(
                             .and_then(|it| it.node_id)
                             .map(|id| ctx.nodes().parent_kind(id))
                             .and_then(|it| match it {
-                                Some(AstKind::SwitchCase(case)) => Some(case),
+                                AstKind::SwitchCase(case) => Some(case),
                                 _ => None,
                             })
                     })
                     .is_some_and(|it| it.consequent.is_empty() || it.consequent.iter().exactly_one().is_ok_and(|it| matches!(it, Statement::BlockStatement(b) if b.body.is_empty())));
+                cfg_ids.push(target);
                 conds.push((target, is_empty));
-                (conds, exit)
+                (cfg_ids, conds, exit)
             } else {
-                (conds, Some(target))
+                if has_default {
+                    cfg_ids.push(target);
+                }
+                (cfg_ids, conds, Some(target))
             }
         });
 
-    let mut cfg_ids: Vec<_> = tests.iter().rev().map(|it| it.0).collect();
-    let (default, exit) = if has_default {
-        if let Some(exit) = exit {
-            cfg_ids.push(exit);
-        }
-        (exit, None)
-    } else {
-        (None, exit)
-    };
+    let (default, exit) = if has_default { (exit, None) } else { (None, exit) };
+    cfg_ids.reverse();
     (cfg_ids, FxHashMap::from_iter(tests), default, exit)
 }
 
@@ -552,6 +532,7 @@ fn test() {
             "switch (foo) { case 0: a(); \n// eslint-disable-next-line no-fallthrough\n case 1: }",
             None,
         ),
+        ("switch(foo) { case 0: default: a(); break; case 1: b(); }", None),
         (
             "switch(foo) { case 0: a(); /* no break */ case 1: b(); }",
             Some(serde_json::json!([{

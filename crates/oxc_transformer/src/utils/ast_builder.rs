@@ -4,7 +4,9 @@ use oxc_allocator::{Box as ArenaBox, Vec as ArenaVec};
 use oxc_ast::{NONE, ast::*};
 use oxc_semantic::{ReferenceFlags, ScopeFlags, ScopeId, SymbolFlags};
 use oxc_span::{GetSpan, SPAN};
-use oxc_traverse::{BoundIdentifier, TraverseCtx};
+use oxc_traverse::BoundIdentifier;
+
+use crate::context::TraverseCtx;
 
 /// `object` -> `object.call`.
 pub fn create_member_callee<'a>(
@@ -67,8 +69,8 @@ pub fn wrap_statements_in_arrow_function_iife<'a>(
     let kind = FormalParameterKind::ArrowFormalParameters;
     let params = ctx.ast.alloc_formal_parameters(SPAN, kind, ctx.ast.vec(), NONE);
     let body = ctx.ast.alloc_function_body(SPAN, ctx.ast.vec(), stmts);
-    let arrow = ctx.ast.expression_arrow_function_with_scope_id_and_pure(
-        SPAN, false, false, NONE, params, NONE, body, scope_id, false,
+    let arrow = ctx.ast.expression_arrow_function_with_scope_id_and_pure_and_pife(
+        SPAN, false, false, NONE, params, NONE, body, scope_id, false, false,
     );
     ctx.ast.expression_call(span, arrow, NONE, ctx.ast.vec(), false)
 }

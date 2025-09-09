@@ -7,20 +7,22 @@ use std::{
 };
 
 use cow_utils::CowUtils;
-use oxc_allocator::Allocator;
-use oxc_diagnostics::{GraphicalReportHandler, GraphicalTheme, NamedSource};
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
+
+use oxc_allocator::Allocator;
+use oxc_diagnostics::{GraphicalReportHandler, GraphicalTheme, NamedSource};
 
 use crate::{
-    AllowWarnDeny, ConfigStore, ConfigStoreBuilder, LintPlugins, LintService, LintServiceOptions,
-    Linter, Oxlintrc, RuleEnum,
+    AllowWarnDeny, BuiltinLintPlugins, ConfigStore, ConfigStoreBuilder, LintPlugins, LintService,
+    LintServiceOptions, Linter, Oxlintrc, RuleEnum,
+    external_plugin_store::ExternalPluginStore,
     fixer::{FixKind, Fixer},
     options::LintOptions,
-    read_to_string,
     rules::RULES,
     service::RuntimeFileSystem,
+    utils::read_to_arena_str,
 };
 
 #[derive(Eq, PartialEq)]
@@ -123,37 +125,54 @@ impl From<Option<FixKind>> for ExpectFixKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct ExpectFix {
+pub struct ExpectFixTestCase {
     /// Source code being tested
     source: String,
-    /// Expected source code after fix has been applied
-    expected: String,
-    kind: ExpectFixKind,
+    expected: Vec<ExpectFix>,
     rule_config: Option<Value>,
 }
 
-impl<S: Into<String>> From<(S, S, Option<Value>)> for ExpectFix {
+#[derive(Debug, Clone)]
+struct ExpectFix {
+    /// Expected source code after fix has been applied
+    expected: String,
+    kind: ExpectFixKind,
+}
+
+impl<S: Into<String>> From<(S, S, Option<Value>)> for ExpectFixTestCase {
     fn from(value: (S, S, Option<Value>)) -> Self {
         Self {
             source: value.0.into(),
-            expected: value.1.into(),
-            kind: ExpectFixKind::Any,
+            expected: vec![ExpectFix { expected: value.1.into(), kind: ExpectFixKind::Any }],
             rule_config: value.2,
         }
     }
 }
 
-impl<S: Into<String>> From<(S, S)> for ExpectFix {
+impl<S: Into<String>> From<(S, S)> for ExpectFixTestCase {
     fn from(value: (S, S)) -> Self {
         Self {
             source: value.0.into(),
-            expected: value.1.into(),
-            kind: ExpectFixKind::Any,
+            expected: vec![ExpectFix { expected: value.1.into(), kind: ExpectFixKind::Any }],
             rule_config: None,
         }
     }
 }
-impl<S, F> From<(S, S, Option<Value>, F)> for ExpectFix
+
+impl<S: Into<String>> From<(S, (S, S))> for ExpectFixTestCase {
+    fn from(value: (S, (S, S))) -> Self {
+        Self {
+            source: value.0.into(),
+            expected: vec![
+                ExpectFix { expected: value.1.0.into(), kind: ExpectFixKind::Any },
+                ExpectFix { expected: value.1.1.into(), kind: ExpectFixKind::Any },
+            ],
+            rule_config: None,
+        }
+    }
+}
+
+impl<S, F> From<(S, S, Option<Value>, F)> for ExpectFixTestCase
 where
     S: Into<String>,
     F: Into<ExpectFixKind>,
@@ -161,8 +180,7 @@ where
     fn from((source, expected, config, kind): (S, S, Option<Value>, F)) -> Self {
         Self {
             source: source.into(),
-            expected: expected.into(),
-            kind: kind.into(),
+            expected: vec![ExpectFix { expected: expected.into(), kind: kind.into() }],
             rule_config: config,
         }
     }
@@ -180,15 +198,18 @@ impl TesterFileSystem {
 }
 
 impl RuntimeFileSystem for TesterFileSystem {
-    fn read_to_string(&self, path: &Path) -> Result<String, std::io::Error> {
+    fn read_to_arena_str<'a>(
+        &self,
+        path: &Path,
+        allocator: &'a Allocator,
+    ) -> Result<&'a str, std::io::Error> {
         if path == self.path_to_lint {
-            return Ok(self.source_text.clone());
+            return Ok(allocator.alloc_str(&self.source_text));
         }
-
-        read_to_string(path)
+        read_to_arena_str(path, allocator)
     }
 
-    fn write_file(&self, _path: &Path, _content: String) -> Result<(), std::io::Error> {
+    fn write_file(&self, _path: &Path, _content: &str) -> Result<(), std::io::Error> {
         panic!("writing file should not be allowed in Tester");
     }
 }
@@ -206,7 +227,7 @@ pub struct Tester {
     ///
     /// Note that disabling this check should be done as little as possible, and
     /// never in bad faith (e.g. no `#[test]` functions have fixer cases at all).
-    expect_fix: Option<Vec<ExpectFix>>,
+    expect_fix: Option<Vec<ExpectFixTestCase>>,
     snapshot: String,
     /// Suffix added to end of snapshot name.
     ///
@@ -285,42 +306,37 @@ impl Tester {
     }
 
     pub fn with_import_plugin(mut self, yes: bool) -> Self {
-        self.plugins.set(LintPlugins::IMPORT, yes);
+        self.plugins.builtin.set(BuiltinLintPlugins::IMPORT, yes);
         self
     }
 
     pub fn with_jest_plugin(mut self, yes: bool) -> Self {
-        self.plugins.set(LintPlugins::JEST, yes);
+        self.plugins.builtin.set(BuiltinLintPlugins::JEST, yes);
         self
     }
 
     pub fn with_vitest_plugin(mut self, yes: bool) -> Self {
-        self.plugins.set(LintPlugins::VITEST, yes);
+        self.plugins.builtin.set(BuiltinLintPlugins::VITEST, yes);
         self
     }
 
     pub fn with_jsx_a11y_plugin(mut self, yes: bool) -> Self {
-        self.plugins.set(LintPlugins::JSX_A11Y, yes);
+        self.plugins.builtin.set(BuiltinLintPlugins::JSX_A11Y, yes);
         self
     }
 
     pub fn with_nextjs_plugin(mut self, yes: bool) -> Self {
-        self.plugins.set(LintPlugins::NEXTJS, yes);
+        self.plugins.builtin.set(BuiltinLintPlugins::NEXTJS, yes);
         self
     }
 
     pub fn with_react_perf_plugin(mut self, yes: bool) -> Self {
-        self.plugins.set(LintPlugins::REACT_PERF, yes);
+        self.plugins.builtin.set(BuiltinLintPlugins::REACT_PERF, yes);
         self
     }
 
     pub fn with_node_plugin(mut self, yes: bool) -> Self {
-        self.plugins.set(LintPlugins::NODE, yes);
-        self
-    }
-
-    pub fn with_lint_options(mut self, lint_options: LintOptions) -> Self {
-        self.lint_options = lint_options;
+        self.plugins.builtin.set(BuiltinLintPlugins::NODE, yes);
         self
     }
 
@@ -350,7 +366,7 @@ impl Tester {
     /// Tester::new("no-undef", pass, fail).expect_fix(fix).test();
     /// ```
     #[must_use]
-    pub fn expect_fix<F: Into<ExpectFix>>(mut self, expect_fix: Vec<F>) -> Self {
+    pub fn expect_fix<F: Into<ExpectFixTestCase>>(mut self, expect_fix: Vec<F>) -> Self {
         // prevent `expect_fix` abuse
         assert!(
             !expect_fix.is_empty(),
@@ -404,7 +420,7 @@ impl Tester {
     fn test_pass(&mut self) {
         for TestCase { source, rule_config, eslint_config, path } in self.expect_pass.clone() {
             let result =
-                self.run(&source, rule_config.clone(), &eslint_config, path, ExpectFixKind::None);
+                self.run(&source, rule_config.clone(), eslint_config, path, ExpectFixKind::None, 0);
             let passed = result == TestResult::Passed;
             let config = rule_config.map_or_else(
                 || "\n\n------------------------\n".to_string(),
@@ -426,7 +442,7 @@ impl Tester {
     fn test_fail(&mut self) {
         for TestCase { source, rule_config, eslint_config, path } in self.expect_fail.clone() {
             let result =
-                self.run(&source, rule_config.clone(), &eslint_config, path, ExpectFixKind::None);
+                self.run(&source, rule_config.clone(), eslint_config, path, ExpectFixKind::None, 0);
             let failed = result == TestResult::Failed;
             let config = rule_config.map_or_else(
                 || "\n\n------------------------".to_string(),
@@ -444,6 +460,7 @@ impl Tester {
         }
     }
 
+    #[expect(clippy::cast_possible_truncation)] // there are no rules with over 255 different possible fixes
     fn test_fix(&mut self) {
         // If auto-fixes are reported, make sure some fix test cases are provided
         let rule = self.find_rule();
@@ -458,46 +475,61 @@ impl Tester {
         };
 
         for fix in fix_test_cases {
-            let ExpectFix { source, expected, kind, rule_config: config } = fix;
-            let result = self.run(&source, config, &None, None, kind);
-            match result {
-                TestResult::Fixed(fixed_str) => assert_eq!(
-                    expected, fixed_str,
-                    r#"Expected "{source}" to be fixed into "{expected}""#
-                ),
-                TestResult::Passed => panic!("Expected a fix, but test passed: {source}"),
-                TestResult::Failed => panic!("Expected a fix, but test failed: {source}"),
+            let ExpectFixTestCase { source, expected, rule_config: config } = fix;
+            for (index, expect) in expected.iter().enumerate() {
+                let result =
+                    self.run(&source, config.clone(), None, None, expect.kind, index as u8);
+                match result {
+                    TestResult::Fixed(fixed_str) => assert_eq!(
+                        expect.expected, fixed_str,
+                        r#"Expected "{source}" to be fixed into "{}""#,
+                        expect.expected
+                    ),
+                    TestResult::Passed => panic!("Expected a fix, but test passed: {source}"),
+                    TestResult::Failed => panic!("Expected a fix, but test failed: {source}"),
+                }
             }
         }
     }
 
-    #[expect(clippy::ref_option)]
     fn run(
         &mut self,
         source_text: &str,
         rule_config: Option<Value>,
-        eslint_config: &Option<Value>,
+        eslint_config: Option<Value>,
         path: Option<PathBuf>,
-        fix: ExpectFixKind,
+        fix_kind: ExpectFixKind,
+        fix_index: u8,
     ) -> TestResult {
-        let allocator = Allocator::default();
+        let mut allocator = Allocator::default();
         let rule = self.find_rule().read_json(rule_config.unwrap_or_default());
+        let mut external_plugin_store = ExternalPluginStore::default();
         let linter = Linter::new(
             self.lint_options,
             ConfigStore::new(
                 eslint_config
-                    .as_ref()
-                    .map_or_else(ConfigStoreBuilder::empty, |v| {
-                        ConfigStoreBuilder::from_oxlintrc(true, Oxlintrc::deserialize(v).unwrap())
-                            .unwrap()
+                    .map_or_else(ConfigStoreBuilder::empty, |mut v| {
+                        v.as_object_mut().unwrap().insert("categories".into(), json!({}));
+                        ConfigStoreBuilder::from_oxlintrc(
+                            true,
+                            Oxlintrc::deserialize(v).unwrap(),
+                            None,
+                            &mut external_plugin_store,
+                        )
+                        .unwrap()
                     })
-                    .with_plugins(self.plugins)
+                    .with_builtin_plugins(
+                        self.plugins.builtin.union(BuiltinLintPlugins::from(self.plugin_name)),
+                    )
                     .with_rule(rule, AllowWarnDeny::Warn)
-                    .build(),
+                    .build(&external_plugin_store)
+                    .unwrap(),
                 FxHashMap::default(),
+                external_plugin_store,
             ),
+            None,
         )
-        .with_fix(fix.into());
+        .with_fix(fix_kind.into());
 
         let path_to_lint = if self.plugins.has_import() {
             assert!(path.is_none(), "import plugin does not support path");
@@ -512,21 +544,24 @@ impl Tester {
 
         let cwd = self.current_working_directory.clone();
         let paths = vec![Arc::<OsStr>::from(path_to_lint.as_os_str())];
-        let options =
-            LintServiceOptions::new(cwd, paths).with_cross_module(self.plugins.has_import());
-        let mut lint_service = LintService::new(&linter, options).with_file_system(Box::new(
-            TesterFileSystem::new(path_to_lint, source_text.to_string()),
-        ));
+        let options = LintServiceOptions::new(cwd).with_cross_module(self.plugins.has_import());
+        let mut lint_service = LintService::new(linter, options);
+        lint_service
+            .with_file_system(Box::new(TesterFileSystem::new(
+                path_to_lint,
+                source_text.to_string(),
+            )))
+            .with_paths(paths);
 
         let (sender, _receiver) = mpsc::channel();
-        let result = lint_service.run_test_source(&allocator, false, &sender);
+        let result = lint_service.run_test_source(&mut allocator, false, &sender);
 
         if result.is_empty() {
             return TestResult::Passed;
         }
 
-        if fix.is_some() {
-            let fix_result = Fixer::new(source_text, result).fix();
+        if fix_kind.is_some() {
+            let fix_result = Fixer::new(source_text, result).with_fix_index(fix_index).fix();
             return TestResult::Fixed(fix_result.fixed_code.to_string());
         }
 

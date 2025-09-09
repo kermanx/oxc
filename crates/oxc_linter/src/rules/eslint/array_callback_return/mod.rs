@@ -153,7 +153,8 @@ impl Rule for ArrayCallbackReturn {
 /// to the target array methods we're interested in.
 pub fn get_array_method_name<'a>(node: &AstNode<'a>, ctx: &LintContext<'a>) -> Option<&'a str> {
     let mut current_node = node;
-    while let Some(parent) = ctx.nodes().parent_node(current_node.id()) {
+    loop {
+        let parent = ctx.nodes().parent_node(current_node.id());
         match parent.kind() {
             // foo.every(nativeFoo || function foo() { ... })
             AstKind::LogicalExpression(_)
@@ -174,7 +175,7 @@ pub fn get_array_method_name<'a>(node: &AstNode<'a>, ctx: &LintContext<'a>) -> O
                 let func_node = outermost_paren(func_node, ctx);
 
                 // the node that calls func_node
-                let func_parent = ctx.nodes().parent_node(func_node.id()).unwrap();
+                let func_parent = ctx.nodes().parent_node(func_node.id());
 
                 if let AstKind::CallExpression(call) = func_parent.kind() {
                     let expected_callee = &call.callee;
@@ -310,6 +311,7 @@ fn test() {
             None,
         ),
         ("foo.every(function() { try { bar(); } finally { return true; } })", None),
+        ("foo.every(function() { switch (a) { default: case0: return true; } })", None),
         (
             "Array.from(x, function() { return; })",
             Some(serde_json::json!([{"allowImplicit": true}])),
@@ -424,6 +426,10 @@ fn test() {
         ("foo[`${every}`](function() {})", None),
         ("foo.every(() => true)", None),
         ("return function() {}", None),
+        (
+            "array.map((node) => { if (isTaskNode(node)) { return someObj; } else if (isOtherNode(node)) { return otherObj; } else { throw new Error('Unsupported'); } })",
+            None,
+        ),
     ];
 
     let fail = vec![

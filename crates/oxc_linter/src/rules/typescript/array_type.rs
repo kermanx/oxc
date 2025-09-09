@@ -1,6 +1,9 @@
 use oxc_ast::{
     AstKind,
-    ast::{TSType, TSTypeName, TSTypeOperatorOperator, TSTypeReference},
+    ast::{
+        TSType, TSTypeAliasDeclaration, TSTypeAnnotation, TSTypeName, TSTypeOperatorOperator,
+        TSTypeReference,
+    },
 };
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
@@ -8,6 +11,7 @@ use oxc_semantic::AstNode;
 use oxc_span::Span;
 
 use crate::{
+    ast_util::outermost_paren_parent,
     context::{ContextHost, LintContext},
     rule::Rule,
 };
@@ -37,6 +41,14 @@ declare_oxc_lint!(
     /// const arr: number[] = new Array<number>();
     /// ```
     ///
+    /// ```typescript
+    /// /*oxlint array-type: ["error", { "default": "array-simple" }] */
+    /// const a: (string | number)[] = ['a', 'b'];
+    /// const b: { prop: string }[] = [{ prop: 'a' }];
+    /// const c: Array<MyType> = ['a', 'b'];
+    /// const d: Array<string> = ['a', 'b'];
+    /// ```
+    ///
     /// Examples of **correct** code for this rule:
     /// ```typescript
     /// /*oxlint array-type: ["error", { "default": "array" }] */
@@ -47,6 +59,31 @@ declare_oxc_lint!(
     /// /*oxlint array-type: ["error", { "default": "generic" }] */
     /// const arr: Array<number> = new Array<number>();
     /// ```
+    ///
+    /// ```typescript
+    /// /*oxlint array-type: ["error", { "default": "array-simple" }] */
+    /// const a: Array<string | number> = ['a', 'b'];
+    /// const b: Array<{ prop: string }> = [{ prop: 'a' }];
+    /// const c: string[] = ['a', 'b'];
+    /// const d: MyType[] = ['a', 'b'];
+    /// ```
+    ///
+    /// ### Options
+    ///
+    /// ```json
+    /// {
+    ///     "typescript/array-type": ["error", { "default": "array", "readonly": "array"  }]
+    /// }
+    /// ```
+    /// - `default`: The array type expected for mutable cases.
+    /// - `readonly`: The array type expected for readonly cases. If omitted, the value for `default` will be used.
+    ///
+    /// Both `default` and `readonly` can be one of:
+    /// - `"array"`
+    /// - `"generic"`
+    /// - `"array-simple"`
+    ///
+    /// The default config will enforce that all mutable and readonly arrays use the 'array' syntax.
     ArrayType,
     typescript,
     style,
@@ -145,6 +182,9 @@ impl Rule for ArrayType {
             &self.readonly.clone().unwrap_or_else(|| default_config.clone());
 
         match node.kind() {
+            AstKind::TSArrayType(ts_array_type) => {
+                check(&ts_array_type.element_type, default_config, readonly_config, ctx);
+            }
             AstKind::TSTypeAnnotation(ts_type_annotation) => {
                 check(&ts_type_annotation.type_annotation, default_config, readonly_config, ctx);
             }
@@ -155,6 +195,45 @@ impl Rule for ArrayType {
             // for example: let ya = [[1, '2']] as [number, string][];
             AstKind::TSAsExpression(ts_as_expression) => {
                 check(&ts_as_expression.type_annotation, default_config, readonly_config, ctx);
+            }
+            AstKind::TSTypeReference(ts_type_reference)
+                if outermost_paren_parent(node, ctx).is_some_and(|x| match x.kind() {
+                    AstKind::TSTypeAliasDeclaration(TSTypeAliasDeclaration {
+                        type_annotation,
+                        ..
+                    })
+                    | AstKind::TSTypeAnnotation(TSTypeAnnotation { type_annotation, .. }) => {
+                        matches!(type_annotation, TSType::TSArrayType(_))
+                    }
+                    _ => false,
+                }) =>
+            {
+                check_and_report_error_reference(
+                    default_config,
+                    readonly_config,
+                    ts_type_reference,
+                    ctx,
+                );
+            }
+            AstKind::TSTypeParameterInstantiation(ts_type_param_instantiation) => {
+                for param in &ts_type_param_instantiation.params {
+                    check(param, default_config, readonly_config, ctx);
+                }
+            }
+            AstKind::TSConditionalType(ts_conditional_type) => {
+                check(&ts_conditional_type.check_type, default_config, readonly_config, ctx);
+                check(&ts_conditional_type.extends_type, default_config, readonly_config, ctx);
+                check(&ts_conditional_type.true_type, default_config, readonly_config, ctx);
+                check(&ts_conditional_type.false_type, default_config, readonly_config, ctx);
+            }
+            AstKind::TSIndexedAccessType(ts_indexed_access_type) => {
+                check(&ts_indexed_access_type.object_type, default_config, readonly_config, ctx);
+                check(&ts_indexed_access_type.index_type, default_config, readonly_config, ctx);
+            }
+            AstKind::TSMappedType(ts_mapped_type) => {
+                if let Some(type_annotation) = &ts_mapped_type.type_annotation {
+                    check(type_annotation, default_config, readonly_config, ctx);
+                }
             }
             _ => {}
         }
@@ -418,24 +497,25 @@ fn is_simple_type(ts_type: &TSType) -> bool {
         | TSType::TSUndefinedKeyword(_)
         | TSType::TSThisType(_) => true,
         TSType::TSTypeReference(node) => {
-            let type_name = TSTypeName::get_identifier_reference(&node.type_name);
-            if type_name.name.as_str() == "Array" {
-                if node.type_arguments.is_none() {
-                    return true;
-                }
-                if node.type_arguments.as_ref().unwrap().params.len() == 1 {
-                    return is_simple_type(
-                        node.type_arguments.as_ref().unwrap().params.first().unwrap(),
-                    );
-                }
-            } else {
-                if node.type_arguments.is_some() {
+            if let Some(type_name) = TSTypeName::get_identifier_reference(&node.type_name) {
+                if type_name.name.as_str() == "Array" {
+                    if node.type_arguments.is_none() {
+                        return true;
+                    }
+                    if node.type_arguments.as_ref().unwrap().params.len() == 1 {
+                        return is_simple_type(
+                            node.type_arguments.as_ref().unwrap().params.first().unwrap(),
+                        );
+                    }
+                } else {
+                    if node.type_arguments.is_some() {
+                        return false;
+                    }
+                    if node.type_name.is_identifier() || node.type_name.is_qualified_name() {
+                        return true;
+                    }
                     return false;
                 }
-                if let TSTypeName::IdentifierReference(_) = &node.type_name {
-                    return true;
-                }
-                return false;
             }
             false
         }
@@ -825,9 +905,82 @@ fn test() {
             "let a: readonly Array<number>[] = [[]];",
             Some(serde_json::json!([{"default":"generic","readonly":"array"}])),
         ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test = testFn<string[]>([]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test = testFn<Array<string>>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test = testFn<string[]>([]);",
+            Some(serde_json::json!([{"default":"array-simple"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test = testFn<Array<{name: string}>>([]);",
+            Some(serde_json::json!([{"default":"array-simple"}])),
+        ),
+        (
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test = testFn<string[], number[]>([]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        (
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test = testFn<Array<string>, Array<number>>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test = testFn<readonly string[]>([]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test = testFn<ReadonlyArray<string>>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test = testFn<readonly string[]>([]);",
+            Some(serde_json::json!([{"default":"array-simple"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test = testFn<ReadonlyArray<{name: string}>>([]);",
+            Some(serde_json::json!([{"default":"array-simple"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test = testFn<string>('hello');",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test = testFn<{name: string}>({name: 'test'});",
+            Some(serde_json::json!([{"default":"array-simple"}])),
+        ),
+        (
+            "class MyClass<T> { constructor(public value: T) {} }
+const instance = new MyClass<number>(42);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        // https://github.com/oxc-project/oxc/issues/12605
+        ("let a: factories.User[] = [];", Some(serde_json::json!([{"default":"array-simple"}]))),
+        ("let a: factories.TT.User[] = [];", Some(serde_json::json!([{"default":"array-simple"}]))),
+        (
+            "let z: readonly factories.User[] = [];",
+            Some(serde_json::json!([{"readonly":"array-simple"}])),
+        ),
     ];
 
     let fail = vec![
+        ("let a: factories.User[] = [];", Some(serde_json::json!([{"default":"generic"}]))),
         ("let a: Array<number> = [];", Some(serde_json::json!([{"default":"array"}]))),
         ("let a: Array<string | number> = [];", Some(serde_json::json!([{"default":"array"}]))),
         ("let a: ReadonlyArray<number> = [];", Some(serde_json::json!([{"default":"array"}]))),
@@ -1191,6 +1344,133 @@ fn test() {
         (
             "let a: Promise<string[]> = Promise.resolve([]);",
             Some(serde_json::json!([{"default": "generic"}])),
+        ),
+        // https://github.com/oxc-project/oxc/issues/11568
+        ("type x = Array<number>[]", None),
+        ("const arr: Array<Array<number>>[] = [];", None),
+        ("export function fn4(arr: Array<number>[]) { return arr; }", None),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<{name: string}[]>([]);",
+            Some(serde_json::json!([{"default":"array-simple"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<Array<{name: string}>>([]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<string[]>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<(string | number)[]>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<readonly string[]>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<ReadonlyArray<string>>([]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        (
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test3 = testFn<string[], number[]>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test3 = testFn<Array<string>, Array<number>>([]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test4 = testFn<Promise<string[]>>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test4 = testFn<Promise<Array<string>>>([]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test5 = testFn<(string & number)[]>([]);",
+            Some(serde_json::json!([{"default":"array-simple"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test5 = testFn<(() => void)[]>([]);",
+            Some(serde_json::json!([{"default":"array-simple"}])),
+        ),
+        // Array of arrays in generic arguments
+        // Note: When checking types in generic arguments, the rule checks recursively,
+        // so string[][] will trigger errors for both the outer and inner array types.
+        // This is different from checking a standalone type annotation where only the
+        // outermost type is checked.
+        // Class generic instantiation
+        (
+            "class MyClass<T> { constructor(public value: T) {} }
+const instance = new MyClass<number[]>([1, 2, 3]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "class MyClass<T> { constructor(public value: T) {} }
+const instance = new MyClass<Array<number>>([1, 2, 3]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        // Type assertion with generic
+        (
+            "const value = {} as Map<string, number[]>;",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "const value = {} as Map<string, Array<number>>;",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        (
+            "interface Container<T> { value: T; }
+const container: Container<string[]> = { value: [] };",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "interface Container<T> { value: T; }
+const container: Container<Array<string>> = { value: [] };",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        (
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test7 = testFn<readonly string[], readonly number[]>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test7 = testFn<ReadonlyArray<string>, ReadonlyArray<number>>([]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        (
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test8 = testFn<string[], Array<number>>([]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        (
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test8 = testFn<Array<string>, number[]>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "type IsArray<T> = T extends any[] ? true : false;",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "type MakeArrays<T> = { [K in keyof T]: T[K][] };",
+            Some(serde_json::json!([{"default":"generic"}])),
         ),
     ];
 
@@ -1723,6 +2003,125 @@ fn test() {
             "let a: Promise<string[]> = Promise.resolve([]);",
             "let a: Promise<Array<string>> = Promise.resolve([]);",
             Some(serde_json::json!([{"default": "generic"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<{name: string}[]>([]);",
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<Array<{name: string}>>([]);",
+            Some(serde_json::json!([{"default":"array-simple"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<Array<{name: string}>>([]);",
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<{name: string}[]>([]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<string[]>([]);",
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<Array<string>>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<(string | number)[]>([]);",
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<Array<string | number>>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<readonly string[]>([]);",
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<ReadonlyArray<string>>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<ReadonlyArray<string>>([]);",
+            "function testFn<T>(param: T) { return param; }
+export const test2 = testFn<readonly string[]>([]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        // Multiple type parameters - fix tests
+        (
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test3 = testFn<string[], number[]>([]);",
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test3 = testFn<Array<string>, Array<number>>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test3 = testFn<Array<string>, Array<number>>([]);",
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test3 = testFn<string[], number[]>([]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        // Complex types in generic arguments - fix tests
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test5 = testFn<(string & number)[]>([]);",
+            "function testFn<T>(param: T) { return param; }
+export const test5 = testFn<Array<string & number>>([]);",
+            Some(serde_json::json!([{"default":"array-simple"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test5 = testFn<(() => void)[]>([]);",
+            "function testFn<T>(param: T) { return param; }
+export const test5 = testFn<Array<() => void>>([]);",
+            Some(serde_json::json!([{"default":"array-simple"}])),
+        ),
+        // Note: Nested arrays in generic arguments are checked recursively,
+        // so fixes are applied at each level independently
+        // Class generic instantiation - fix tests
+        (
+            "class MyClass<T> { constructor(public value: T) {} }
+const instance = new MyClass<number[]>([1, 2, 3]);",
+            "class MyClass<T> { constructor(public value: T) {} }
+const instance = new MyClass<Array<number>>([1, 2, 3]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "class MyClass<T> { constructor(public value: T) {} }
+const instance = new MyClass<Array<number>>([1, 2, 3]);",
+            "class MyClass<T> { constructor(public value: T) {} }
+const instance = new MyClass<number[]>([1, 2, 3]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        // Readonly arrays in multiple type parameters - fix tests
+        (
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test7 = testFn<readonly string[], readonly number[]>([]);",
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test7 = testFn<ReadonlyArray<string>, ReadonlyArray<number>>([]);",
+            Some(serde_json::json!([{"default":"generic"}])),
+        ),
+        (
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test7 = testFn<ReadonlyArray<string>, ReadonlyArray<number>>([]);",
+            "function testFn<T, U>(param1: T, param2: U) { return [param1, param2]; }
+export const test7 = testFn<readonly string[], readonly number[]>([]);",
+            Some(serde_json::json!([{"default":"array"}])),
+        ),
+        // array-simple with simple types in generics
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test9 = testFn<Array<string>>([]);",
+            "function testFn<T>(param: T) { return param; }
+export const test9 = testFn<string[]>([]);",
+            Some(serde_json::json!([{"default":"array-simple"}])),
+        ),
+        (
+            "function testFn<T>(param: T) { return param; }
+export const test9 = testFn<ReadonlyArray<number>>([]);",
+            "function testFn<T>(param: T) { return param; }
+export const test9 = testFn<readonly number[]>([]);",
+            Some(serde_json::json!([{"default":"array-simple"}])),
         ),
     ];
 

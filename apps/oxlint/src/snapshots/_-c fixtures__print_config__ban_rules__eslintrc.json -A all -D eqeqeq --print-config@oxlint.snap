@@ -7,7 +7,6 @@ working directory:
 ----------
 {
   "plugins": [
-    "react",
     "unicorn",
     "typescript",
     "oxc"
@@ -24,7 +23,8 @@ working directory:
   "settings": {
     "jsx-a11y": {
       "polymorphicPropName": null,
-      "components": {}
+      "components": {},
+      "attributes": {}
     },
     "next": {
       "rootDir": []

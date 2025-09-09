@@ -1,19 +1,20 @@
 //! Token
 
-use std::{mem, ptr};
+use std::{fmt, mem, ptr};
 
 use oxc_span::Span;
 
 use super::kind::Kind;
 
 // Bit layout for `u128`:
-// - Bits 0-31 (32 bits): `start`
-// - Bits 32-63 (32 bits): `end`
-// - Bits 64-71 (8 bits): `kind` (as u8)
-// - Bit 72 (1 bit): `is_on_new_line`
-// - Bit 73 (1 bit): `escaped`
-// - Bit 74 (1 bit): `lone_surrogates`
-// - Bit 75 (1 bit): `has_separator`
+// - Bits 0-31 (32 bits): `start` (`u32`)
+// - Bits 32-63 (32 bits): `end` (`u32`)
+// - Bits 64-71 (8 bits): `kind` (`Kind`)
+// - Bits 72-79 (8 bits): `is_on_new_line` (`bool`)
+// - Bits 80-87 (8 bits): `escaped` (`bool`)
+// - Bits 88-95 (8 bits): `lone_surrogates` (`bool`)
+// - Bits 96-103 (8 bits): `has_separator` (`bool`)
+// - Bits 104-127 (24 bits): unused
 
 const START_SHIFT: usize = 0;
 const END_SHIFT: usize = 32;
@@ -40,7 +41,7 @@ const _: () = {
     assert!(is_valid_shift(HAS_SEPARATOR_SHIFT));
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Token(u128);
 
@@ -57,6 +58,20 @@ impl Default for Token {
         // has_separator: false,
         const _: () = assert!(Kind::Eof as u8 == 0);
         Self(0)
+    }
+}
+
+impl fmt::Debug for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Token")
+            .field("kind", &self.kind())
+            .field("start", &self.start())
+            .field("end", &self.end())
+            .field("is_on_new_line", &self.is_on_new_line())
+            .field("escaped", &self.escaped())
+            .field("lone_surrogates", &self.lone_surrogates())
+            .field("has_separator", &self.has_separator())
+            .finish()
     }
 }
 

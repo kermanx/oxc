@@ -49,6 +49,13 @@ declare_oxc_lint!(
     /// Statements like `expect.hasAssertions()` will NOT trigger this rule since these
     /// calls will execute if they are not in a test block.
     ///
+    /// ### Why is this bad?
+    ///
+    /// `expect` statements outside of test blocks will not be executed by the Jest
+    /// test runner, which means they won't actually test anything. This can lead to
+    /// false confidence in test coverage and may hide bugs that would otherwise be
+    /// caught by proper testing.
+    ///
     /// ### Examples
     ///
     /// Examples of **incorrect** code for this rule:
@@ -133,22 +140,14 @@ fn is_correct_place_to_call_expect<'a>(
     id_nodes_mapping: &FxHashMap<NodeId, &PossibleJestNode<'a, '_>>,
     ctx: &LintContext<'a>,
 ) -> Option<()> {
-    let mut parent = ctx.nodes().parent_node(node.id())?;
+    let mut parent = ctx.nodes().parent_node(node.id());
 
     // loop until find the closest function body
-    loop {
-        match parent.kind() {
-            AstKind::FunctionBody(_) => {
-                break;
-            }
-            _ => {
-                parent = ctx.nodes().parent_node(parent.id())?;
-            }
-        }
+    while !matches!(parent.kind(), AstKind::FunctionBody(_) | AstKind::Program(_)) {
+        parent = ctx.nodes().parent_node(parent.id());
     }
 
-    let node = parent;
-    let parent = ctx.nodes().parent_node(node.id())?;
+    let parent = ctx.nodes().parent_node(parent.id());
 
     match parent.kind() {
         AstKind::Function(function) => {
@@ -158,7 +157,7 @@ fn is_correct_place_to_call_expect<'a>(
             }
 
             if function.is_expression() {
-                let grandparent = ctx.nodes().parent_node(parent.id())?;
+                let grandparent = ctx.nodes().parent_node(parent.id());
 
                 // `test('foo', function () { expect(1).toBe(1) })`
                 // `const foo = function() {expect(1).toBe(1)}`
@@ -175,7 +174,7 @@ fn is_correct_place_to_call_expect<'a>(
             }
         }
         AstKind::ArrowFunctionExpression(_) => {
-            let grandparent = ctx.nodes().parent_node(parent.id())?;
+            let grandparent = ctx.nodes().parent_node(parent.id());
             // `test('foo', () => expect(1).toBe(1))`
             // `const foo = () => expect(1).toBe(1)`
             return if is_var_declarator_or_test_block(
@@ -218,14 +217,26 @@ fn is_var_declarator_or_test_block<'a>(
                 return true;
             }
         }
-        AstKind::Argument(_) => {
-            if let Some(parent) = ctx.nodes().parent_node(node.id()) {
-                return is_var_declarator_or_test_block(
-                    parent,
-                    additional_test_block_functions,
-                    id_nodes_mapping,
-                    ctx,
-                );
+        AstKind::Argument(_) | AstKind::ArrayExpression(_) | AstKind::ObjectExpression(_) => {
+            let mut current = node;
+            loop {
+                let parent = ctx.nodes().parent_node(current.id());
+                match parent.kind() {
+                    AstKind::CallExpression(_) | AstKind::VariableDeclarator(_) => {
+                        return is_var_declarator_or_test_block(
+                            parent,
+                            additional_test_block_functions,
+                            id_nodes_mapping,
+                            ctx,
+                        );
+                    }
+                    AstKind::Argument(_)
+                    | AstKind::ArrayExpression(_)
+                    | AstKind::ObjectExpression(_) => {
+                        current = parent;
+                    }
+                    _ => break,
+                }
             }
         }
         _ => {}

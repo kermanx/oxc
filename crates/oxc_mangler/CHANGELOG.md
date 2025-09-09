@@ -2,6 +2,104 @@
 
 All notable changes to this package will be documented in this file.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0).
+
+
+## [0.86.0] - 2025-08-31
+
+### 🚀 Features
+
+- afa0877 allocator: Introduce `BitSet` type (#13449) (overlookmotel)
+
+### 🐛 Bug Fixes
+
+- e3f953d mangler: Keep names for parenthesized functions and classes (#13421) (sapphi-red)
+
+### ⚡ Performance
+
+- 0d66399 mangler: Store slot indexes as `u32`s (#13462) (overlookmotel)
+- caf40c5 mangler: Do not sort `Vec` if empty (#13461) (overlookmotel)
+- e473b83 mangler: Replace `FixedBitSet` with `BitSet` based on Rolldown's implementation (#13419) (sapphi-red)
+
+
+
+
+
+
+
+
+
+
+## [0.80.0] - 2025-08-03
+
+### 🚜 Refactor
+
+- 77d397a mangler: Move `NodeId` lookup into `is_name_set_reference_node` (#12664) (overlookmotel)
+
+### 📚 Documentation
+
+- de1de35 rust: Add comprehensive README.md documentation for all Rust crates (#12706) (Copilot)
+
+### ⚡ Performance
+
+- 4adc1ed mangler: Remove unnecessary `AstNode` lookups (#12663) (overlookmotel)
+
+
+
+## [0.79.0] - 2025-07-30
+
+### 🚜 Refactor
+
+- a696227 linter: Remove AstKind for SimpleAssignmentTarget (#12401) (Tyler Earls)
+
+
+
+
+
+## [0.77.1] - 2025-07-16
+
+### 🚜 Refactor
+
+- ee761de ast: Remove `AstKind` for `AssignmentTarget` (#12252) (Tyler Earls)
+
+
+## [0.77.0] - 2025-07-12
+
+### ⚡ Performance
+
+- c7889c3 semantic,linter: Simplify implementation and uses of ancestors iterators (#12164) (Ulrich Stark)
+
+
+## [0.76.0] - 2025-07-08
+
+### 🚜 Refactor
+
+- 54cf5cb semantic: Remove Option from parent_* methods (#12087) (Ulrich Stark)
+
+
+## [0.75.1] - 2025-07-03
+
+### 🚜 Refactor
+
+- f7a2ae4 ast: Add `AstKind` for `AssignmentTargetPropertyIdentifier`, `AssignmentTargetPropertyProperty` (#11985) (camc314)
+
+
+
+
+
+
+## [0.73.0] - 2025-06-13
+
+### 🚜 Refactor
+
+- bfa05f2 mangler: Use bump allocator for internal storage (#11409) (camchenry)
+- fa4966d mangler: Use external allocator (#11408) (camchenry)
+
+
+# Changelog
+
+All notable changes to this package will be documented in this file.
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project does not adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) until v1.0.0.
 
 ## [0.71.0] - 2025-05-20

@@ -118,10 +118,7 @@ impl<'a> AstBuilder<'a> {
     /// If the `Cow` is owned, allocates the string into arena to generate a new `Atom`.
     #[inline]
     pub fn atom_from_cow(self, value: &Cow<'a, str>) -> Atom<'a> {
-        match value {
-            Cow::Borrowed(s) => Atom::from(*s),
-            Cow::Owned(s) => self.atom(s),
-        }
+        Atom::from_cow_in(value, self.allocator)
     }
 
     /// `0`
@@ -139,6 +136,11 @@ impl<'a> AstBuilder<'a> {
             UnaryOperator::Void,
             num,
         )))
+    }
+    /// `NaN`
+    #[inline]
+    pub fn nan(self, span: Span) -> Expression<'a> {
+        self.expression_numeric_literal(span, f64::NAN, None, NumberBase::Decimal)
     }
 
     /// `"use strict"` directive
@@ -173,7 +175,7 @@ impl<'a> AstBuilder<'a> {
         body: FunctionBody<'a>,
         scope_id: ScopeId,
     ) -> Box<'a, Function<'a>> {
-        self.alloc_function_with_scope_id_and_pure(
+        self.alloc_function_with_scope_id_and_pure_and_pife(
             span,
             r#type,
             id,
@@ -186,6 +188,7 @@ impl<'a> AstBuilder<'a> {
             NONE,
             Some(body),
             scope_id,
+            false,
             false,
         )
     }
@@ -214,7 +217,7 @@ impl<'a> AstBuilder<'a> {
         T4: IntoIn<'a, Option<Box<'a, TSTypeAnnotation<'a>>>>,
         T5: IntoIn<'a, Option<Box<'a, FunctionBody<'a>>>>,
     {
-        self.alloc_function_with_scope_id_and_pure(
+        self.alloc_function_with_scope_id_and_pure_and_pife(
             span,
             r#type,
             id,
@@ -227,6 +230,7 @@ impl<'a> AstBuilder<'a> {
             return_type,
             body,
             scope_id,
+            false,
             false,
         )
     }
@@ -267,19 +271,5 @@ impl<'a> AstBuilder<'a> {
             ImportOrExportKind::Value,
             NONE,
         ))
-    }
-
-    /* ---------- TypeScript ---------- */
-
-    /// Create a [`TSInterfaceHeritage`] that extends from the given list of
-    /// other interfaces.
-    #[inline]
-    pub fn ts_interface_heritages(
-        self,
-        extends: Vec<'a, (Expression<'a>, Option<Box<'a, TSTypeParameterInstantiation<'a>>>, Span)>,
-    ) -> Vec<'a, TSInterfaceHeritage<'a>> {
-        self.vec_from_iter(extends.into_iter().map(|(expression, type_parameters, span)| {
-            TSInterfaceHeritage { span, expression, type_arguments: type_parameters }
-        }))
     }
 }

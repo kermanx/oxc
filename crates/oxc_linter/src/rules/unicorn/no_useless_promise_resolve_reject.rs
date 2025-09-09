@@ -16,7 +16,7 @@ use crate::{
 
 fn resolve(span: Span, preferred: &str) -> OxcDiagnostic {
     OxcDiagnostic::warn(format!("Prefer `{preferred} value` over `{preferred} Promise.resolve(value)`."))
-        .with_help("Wrapping the return value in `Promise.Resolve` is needlessly verbose. All return values in async functions are already wrapped in a `Promise`.")
+        .with_help("Wrapping the return value in `Promise.resolve` is needlessly verbose. All return values in async functions are already wrapped in a `Promise`.")
         .with_label(span)
 }
 
@@ -178,15 +178,14 @@ fn get_function_like_node<'a, 'b>(
     let mut is_in_try_statement = false;
 
     let fnx = loop {
-        if let Some(grand_parent) = ctx.nodes().parent_node(parent.id()) {
-            parent = grand_parent;
-            if parent.kind().is_function_like() {
-                break parent;
-            }
-            if matches!(parent.kind(), AstKind::TryStatement(_)) {
-                is_in_try_statement = true;
-            }
-        } else {
+        parent = ctx.nodes().parent_node(parent.id());
+        if parent.kind().is_function_like() {
+            break parent;
+        }
+        if matches!(parent.kind(), AstKind::TryStatement(_)) {
+            is_in_try_statement = true;
+        }
+        if matches!(parent.kind(), AstKind::Program(_)) {
             return None;
         }
     };
@@ -261,26 +260,20 @@ fn traverse_bind_calls<'a, 'b>(node: &'a AstNode<'b>, ctx: &'a LintContext<'b>) 
 }
 
 fn is_bind_member_expression(node: &AstNode) -> bool {
-    let AstKind::MemberExpression(member_expr) = node.kind() else {
+    let Some(member_expr) = node.kind().as_member_expression_kind() else {
         return false;
     };
-
-    member_expr.static_property_name() == Some("bind")
+    member_expr.static_property_name().is_some_and(|name| name == "bind")
 }
 
 fn match_arrow_function_body<'a>(ctx: &LintContext<'a>, parent: &AstNode<'a>) -> bool {
-    match ctx.nodes().parent_node(parent.id()) {
-        Some(arrow_function_body) => match arrow_function_body.kind() {
-            AstKind::FunctionBody(_) => match ctx.nodes().parent_node(arrow_function_body.id()) {
-                Some(arrow_function) => {
-                    matches!(arrow_function.kind(), AstKind::ArrowFunctionExpression(_))
-                }
-                None => false,
-            },
-            _ => false,
-        },
-        None => false,
+    let parent = ctx.nodes().parent_node(parent.id());
+    if !matches!(parent.kind(), AstKind::FunctionBody(_)) {
+        return false;
     }
+
+    let grand_parent = ctx.nodes().parent_node(parent.id());
+    matches!(grand_parent.kind(), AstKind::ArrowFunctionExpression(_))
 }
 
 fn generate_fix<'a>(
@@ -311,24 +304,20 @@ fn generate_fix<'a>(
             return fixer.noop();
         }
         if is_yield {
-            if let Some(parent) = ctx.nodes().parent_node(node.id()) {
-                if let Some(grand_parent) = ctx.nodes().parent_node(parent.id()) {
-                    if !matches!(
-                        grand_parent.kind(),
-                        AstKind::ExpressionStatement(_) | AstKind::ParenthesizedExpression(_)
-                    ) {
-                        return fixer.noop();
-                    }
-                }
+            let parent = ctx.nodes().parent_node(node.id());
+            let grand_parent = ctx.nodes().parent_node(parent.id());
+            if !matches!(
+                grand_parent.kind(),
+                AstKind::ExpressionStatement(_) | AstKind::ParenthesizedExpression(_)
+            ) {
+                return fixer.noop();
             }
         }
     }
 
     let node = get_parenthesized_node(node, ctx);
 
-    let Some(parent) = ctx.nodes().parent_node(node.id()) else {
-        return fixer.noop();
-    };
+    let parent = ctx.nodes().parent_node(node.id());
 
     let is_arrow_function_body = match parent.kind() {
         AstKind::ExpressionStatement(_) => match_arrow_function_body(ctx, parent),
@@ -384,7 +373,8 @@ fn get_parenthesized_node<'a, 'b>(
     ctx: &'a LintContext<'b>,
 ) -> &'a AstNode<'b> {
     let mut node = node;
-    while let Some(parent_node) = ctx.nodes().parent_node(node.id()) {
+    loop {
+        let parent_node = ctx.nodes().parent_node(node.id());
         if let AstKind::ParenthesizedExpression(_) = parent_node.kind() {
             node = parent_node;
         } else {
@@ -815,11 +805,11 @@ fn test() {
         (r"async () => Promise.reject(...bar);", None),
         // Yield not in an ExpressionStatement
         (
-            r"#
+            r"
         async function * foo() {
             const baz = yield Promise.resolve(bar);
         }
-        #",
+        ",
             None,
         ),
         (

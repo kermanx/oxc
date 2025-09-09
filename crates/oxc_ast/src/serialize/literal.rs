@@ -1,5 +1,3 @@
-use cow_utils::CowUtils;
-
 use oxc_ast_macros::ast_meta;
 use oxc_estree::{ESTree, JsonSafeString, LoneSurrogatesString, Serializer, StructSerializer};
 
@@ -87,25 +85,23 @@ impl StringLiteralValue<'_, '_> {
     }
 }
 
-/// Serializer for `bigint` field of `BigIntLiteral`.
-///
-/// Serialize as `raw` value, with `n` postfix trimmed off, and underscores removed.
-#[ast_meta]
-#[estree(ts_type = "string", raw_deser = "THIS.raw.slice(0, -1).replace(/_/g, '')")]
-pub struct BigIntLiteralBigint<'a, 'b>(pub &'b BigIntLiteral<'a>);
-
-impl ESTree for BigIntLiteralBigint<'_, '_> {
-    fn serialize<S: Serializer>(&self, serializer: S) {
-        let bigint = self.0.raw[..self.0.raw.len() - 1].cow_replace('_', "");
-        JsonSafeString(bigint.as_ref()).serialize(serializer);
-    }
-}
-
 /// Serializer for `value` field of `BigIntLiteral`.
 ///
 /// Serialized as `null` in JSON, but updated on JS side to contain a `BigInt`.
+///
+/// In the Rust type, `value` field is the BigInt as a string.
+/// This ends up in ESTree AST as `bigint` property.
+///
+/// We have to use 2 serializers here to swap the fields around,
+/// because otherwise there's a clash on the field name `value`.
 #[ast_meta]
-#[estree(ts_type = "bigint", raw_deser = "BigInt(THIS.bigint)")]
+#[estree(
+    ts_type = "bigint",
+    raw_deser = "
+        const bigint = DESER[Atom](POS_OFFSET.value);
+        BigInt(bigint)
+    "
+)]
 pub struct BigIntLiteralValue<'a, 'b>(#[expect(dead_code)] pub &'b BigIntLiteral<'a>);
 
 impl ESTree for BigIntLiteralValue<'_, '_> {
@@ -113,6 +109,21 @@ impl ESTree for BigIntLiteralValue<'_, '_> {
         // Record that this node needs fixing on JS side
         serializer.record_fix_path();
         Null(()).serialize(serializer);
+    }
+}
+
+/// Serializer for `bigint` field of `BigIntLiteral`.
+///
+/// Comes from `value` field in Rust type.
+///
+/// `bigint` var in `raw_deser` comes from `BigIntLiteralValue` serializer.
+#[ast_meta]
+#[estree(ts_type = "string", raw_deser = "bigint")]
+pub struct BigIntLiteralBigint<'a, 'b>(pub &'b BigIntLiteral<'a>);
+
+impl ESTree for BigIntLiteralBigint<'_, '_> {
+    fn serialize<S: Serializer>(&self, serializer: S) {
+        JsonSafeString(self.0.value.as_str()).serialize(serializer);
     }
 }
 
@@ -191,26 +202,27 @@ impl ESTree for RegExpFlagsConverter<'_> {
         value.cooked = value.cooked
             .replace(/\uFFFD(.{4})/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
     }
-    { type: 'TemplateElement', start, end, value, tail }
+    { type: 'TemplateElement', value, tail, start, end }
 "#)]
 pub struct TemplateElementConverter<'a, 'b>(pub &'b TemplateElement<'a>);
 
 impl ESTree for TemplateElementConverter<'_, '_> {
     fn serialize<S: Serializer>(&self, serializer: S) {
         let element = self.0;
+
         let mut state = serializer.serialize_struct();
         state.serialize_field("type", &JsonSafeString("TemplateElement"));
+
+        state.serialize_field("value", &TemplateElementValue(element));
+        state.serialize_field("tail", &element.tail);
 
         let mut span = element.span;
         if S::INCLUDE_TS_FIELDS {
             span.start -= 1;
             span.end += if element.tail { 1 } else { 2 };
         }
-        state.serialize_field("start", &span.start);
-        state.serialize_field("end", &span.end);
+        state.serialize_span(span);
 
-        state.serialize_field("value", &TemplateElementValue(element));
-        state.serialize_field("tail", &element.tail);
         state.end();
     }
 }

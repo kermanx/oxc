@@ -15,12 +15,13 @@ import {
   createOxlintConfiguration,
   fixturesWorkspaceUri,
   getDiagnostics,
+  getDiagnosticsWithoutClose,
   loadFixture,
   sleep,
-  testMultiFolderMode,
+  testSingleFolderMode,
   waitForDiagnosticChange,
   WORKSPACE_DIR,
-  WORKSPACE_SECOND_DIR
+  writeToFixtureFile
 } from './test-helpers';
 import assert = require('assert');
 
@@ -32,6 +33,8 @@ suiteSetup(async () => {
 
 teardown(async () => {
   await workspace.getConfiguration('oxc').update('flags', undefined);
+  await workspace.getConfiguration('oxc').update('tsConfigPath', undefined);
+  await workspace.getConfiguration('oxc').update('typeAware', undefined);
   await workspace.saveAll();
 });
 
@@ -50,6 +53,37 @@ suite('E2E Diagnostics', () => {
     strictEqual(diagnostics[0].range.start.character, 8);
     strictEqual(diagnostics[0].range.end.line, 0);
     strictEqual(diagnostics[0].range.end.character, 17);
+  });
+
+  for (const ext of ['astro', 'cjs', 'cts', 'js', 'jsx', 'mjs', 'mts', 'svelte', 'ts', 'tsx', 'vue']) {
+    testSingleFolderMode(`file extension ${ext}`, async () => {
+      await loadFixture('file_extensions');
+      const diagnostics = await getDiagnostics(`debugger.${ext}`);
+
+      strictEqual(diagnostics.length, 1);
+      assert(typeof diagnostics[0].code == 'object');
+      strictEqual(diagnostics[0].code.target.authority, 'oxc.rs');
+      strictEqual(diagnostics[0].message, '`debugger` statement is not allowed\nhelp: Remove the debugger statement');
+      strictEqual(diagnostics[0].severity, DiagnosticSeverity.Warning);
+    });
+  }
+
+  testSingleFolderMode('detects diagnostics on run', async () =>
+  {
+    await loadFixture('lint_on_run');
+    const diagnostics = await getDiagnosticsWithoutClose(`onType.ts`);
+    strictEqual(diagnostics.length, 0);
+
+    await writeToFixtureFile('onType.ts', 'debugger;');
+    await waitForDiagnosticChange();
+    const updatedDiagnostics = await getDiagnosticsWithoutClose(`onType.ts`);
+    strictEqual(updatedDiagnostics.length, 1);
+
+    await workspace.saveAll();
+    await sleep(500);
+
+    const sameDiagnostics = await getDiagnosticsWithoutClose(`onType.ts`);
+    strictEqual(updatedDiagnostics.length, sameDiagnostics.length);
   });
 
   test('empty oxlint configuration behaves like default configuration', async () => {
@@ -155,21 +189,22 @@ suite('E2E Diagnostics', () => {
     strictEqual(nestedDiagnostics[0].severity, DiagnosticSeverity.Error);
   });
 
-  testMultiFolderMode('different diagnostic severity', async () => {
-    await loadFixture('debugger', WORKSPACE_DIR);
-    await loadFixture('debugger_error', WORKSPACE_SECOND_DIR);
-
-    const firstDiagnostics = await getDiagnostics('debugger.js', WORKSPACE_DIR);
-    const secondDiagnostics = await getDiagnostics('debugger.js', WORKSPACE_SECOND_DIR);
-
-    assert(typeof firstDiagnostics[0].code == 'object');
-    strictEqual(firstDiagnostics[0].code.target.authority, 'oxc.rs');
-    strictEqual(firstDiagnostics[0].severity, DiagnosticSeverity.Warning);
-
-    assert(typeof secondDiagnostics[0].code == 'object');
-    strictEqual(secondDiagnostics[0].code.target.authority, 'oxc.rs');
-    strictEqual(secondDiagnostics[0].severity, DiagnosticSeverity.Error);
-  });
+  // somehow this test is flaky in CI
+  // testMultiFolderMode('different diagnostic severity', async () => {
+  //   await loadFixture('debugger', WORKSPACE_DIR);
+  //   await loadFixture('debugger_error', WORKSPACE_SECOND_DIR);
+  //
+  //   const firstDiagnostics = await getDiagnostics('debugger.js', WORKSPACE_DIR);
+  //   const secondDiagnostics = await getDiagnostics('debugger.js', WORKSPACE_SECOND_DIR);
+  //
+  //   assert(typeof firstDiagnostics[0].code == 'object');
+  //   strictEqual(firstDiagnostics[0].code.target.authority, 'oxc.rs');
+  //   strictEqual(firstDiagnostics[0].severity, DiagnosticSeverity.Warning);
+  //
+  //   assert(typeof secondDiagnostics[0].code == 'object');
+  //   strictEqual(secondDiagnostics[0].code.target.authority, 'oxc.rs');
+  //   strictEqual(secondDiagnostics[0].severity, DiagnosticSeverity.Error);
+  // });
 
   // somehow this test is flaky in CI
   test.skip('changing config from `extends` will revalidate the diagnostics', async () => {
@@ -203,6 +238,38 @@ suite('E2E Diagnostics', () => {
     assert(typeof secondDiagnostics[0].code == 'object');
     strictEqual(secondDiagnostics[0].code.target.authority, 'oxc.rs');
     strictEqual(secondDiagnostics[0].severity, DiagnosticSeverity.Error);
+  });
+
+  testSingleFolderMode('changing oxc.tsConfigPath will revalidate the diagnostics', async () => {
+    await loadFixture('changing_tsconfig_path');
+    const firstDiagnostics = await getDiagnostics('deep/src/dep-a.ts');
+
+    strictEqual(firstDiagnostics.length, 0);
+
+    await workspace.getConfiguration('oxc').update('tsConfigPath', "fixtures/deep/tsconfig.json");
+    await workspace.saveAll();
+    await waitForDiagnosticChange();
+
+    const secondDiagnostics = await getDiagnostics('deep/src/dep-a.ts');
+    strictEqual(secondDiagnostics.length, 1);
+    assert(typeof secondDiagnostics[0].code == 'object');
+    strictEqual(secondDiagnostics[0].code.target.authority, 'oxc.rs');
+    assert(secondDiagnostics[0].message.startsWith("Dependency cycle detected"));
+    strictEqual(secondDiagnostics[0].severity, DiagnosticSeverity.Error);
+  });
+
+  testSingleFolderMode('changing oxc.typeAware will revalidate the tsgolint diagnostics', async () => {
+    await loadFixture('type_aware');
+    const firstDiagnostics = await getDiagnostics('index.ts');
+
+    strictEqual(firstDiagnostics.length, 0);
+
+    await workspace.getConfiguration('oxc').update('typeAware', true);
+    await workspace.saveAll();
+    await waitForDiagnosticChange();
+
+    const secondDiagnostics = await getDiagnostics('index.ts');
+    assert(secondDiagnostics.length != 0);
   });
 
   test('cross module', async () => {

@@ -122,6 +122,83 @@ declare_oxc_lint!(
     /// ```ts
     /// import type { Foo } from 'Foo';
     /// ```
+    ///
+    /// ### Options
+    ///
+    /// ```json
+    /// {
+    ///     "typescript/consistent-type-imports": [
+    ///         "error",
+    ///         {
+    ///             "prefer": "type-imports",
+    ///             "fixStyle": "separate-type-imports",
+    ///             "disallowTypeAnnotations": true
+    ///         }
+    ///     ]
+    /// }
+    /// ```
+    ///
+    /// - `prefer`: Control whether to enforce type imports or value imports
+    ///   - `"type-imports"` (default): Will enforce that you always use `import type Foo from '...'` except referenced by metadata of decorators
+    ///   - `"no-type-imports"`: Will enforce that you always use `import Foo from '...'`
+    ///
+    /// - `fixStyle`: Determines how type imports are added when auto-fixing
+    ///   - `"separate-type-imports"` (default): Will add the type keyword after the import keyword `import type { A } from '...'`
+    ///   - `"inline-type-imports"`: Will inline the type keyword `import { type A } from '...'` (only available in TypeScript 4.5+)
+    ///
+    /// - `disallowTypeAnnotations`: Disallow using `import()` in type annotations
+    ///   - `true` (default): Disallows using `import()` in type annotations like `type T = import('foo')`
+    ///   - `false`: Allows `import()` type annotations
+    ///
+    /// #### Examples with `"prefer": "type-imports"` (default)
+    ///
+    /// Examples of **incorrect** code:
+    /// ```ts
+    /// import { Foo } from 'foo';
+    /// let foo: Foo;
+    /// ```
+    ///
+    /// Examples of **correct** code:
+    /// ```ts
+    /// import type { Foo } from 'foo';
+    /// let foo: Foo;
+    /// ```
+    ///
+    /// #### Examples with `"prefer": "no-type-imports"`
+    ///
+    /// Examples of **incorrect** code:
+    /// ```ts
+    /// import type { Foo } from 'foo';
+    /// let foo: Foo;
+    /// ```
+    ///
+    /// Examples of **correct** code:
+    /// ```ts
+    /// import { Foo } from 'foo';
+    /// let foo: Foo;
+    /// ```
+    ///
+    /// #### Examples with `"fixStyle": "inline-type-imports"`
+    ///
+    /// When fixing type imports, this option will use inline `type` modifiers:
+    /// ```ts
+    /// // Before fixing
+    /// import { A, B } from 'foo';
+    /// type T = A;
+    /// const b = B;
+    ///
+    /// // After fixing
+    /// import { type A, B } from 'foo';
+    /// type T = A;
+    /// const b = B;
+    /// ```
+    ///
+    /// #### Examples with `"disallowTypeAnnotations": false`
+    ///
+    /// When set to `false`, allows `import()` type annotations:
+    /// ```ts
+    /// type T = import('foo').Bar;
+    /// ```
     ConsistentTypeImports,
     typescript,
     style,
@@ -502,10 +579,9 @@ fn fix_to_type_import_declaration<'a>(options: &FixOptions<'a, '_>) -> FixerResu
             if type_names.len() == import_decl.specifiers.as_ref().map_or(0, |s| s.len()) {
                 // import type Type from 'foo'
                 //        ^^^^^ insert
-                rule_fixes.push(fixer.insert_text_after(
-                    &Span::new(import_decl.span().start, import_decl.span().start + 6),
-                    " type",
-                ));
+                rule_fixes.push(
+                    fixer.insert_text_after(&Span::sized(import_decl.span().start, 6), " type"),
+                );
             } else {
                 let import_text = ctx.source_range(import_decl.span);
                 // import Type, { Foo } from 'foo'
@@ -556,8 +632,7 @@ fn fix_insert_named_specifiers_in_named_specifier_list<'a>(
     let first_non_whitespace_before_close_brace =
         import_text[..close_brace as usize].chars().rev().find(|c| !c.is_whitespace());
 
-    let span =
-        Span::new(import_decl.span().start + close_brace, import_decl.span().start + close_brace);
+    let span = Span::empty(import_decl.span().start + close_brace);
     if first_non_whitespace_before_close_brace.is_some_and(|ch| !matches!(ch, ',' | '{')) {
         Ok(fixer.insert_text_before(&span, format!(",{insert_text}")))
     } else {
@@ -578,8 +653,7 @@ fn get_type_only_named_import<'a>(
     ctx: &LintContext<'a>,
     source: &str,
 ) -> Option<&'a ImportDeclaration<'a>> {
-    let root = ctx.nodes().root_node()?;
-    let program = root.kind().as_program()?;
+    let program = ctx.nodes().program();
 
     for stmt in &program.body {
         let Statement::ImportDeclaration(import_decl) = stmt else {
@@ -795,14 +869,13 @@ fn fix_insert_type_specifier_for_import_declaration<'a>(
 ) -> FixerResult<RuleFix<'a>> {
     let FixOptions { fixer, import_decl, ctx, .. } = options;
     let fixer = fixer.for_multifix();
-    let import_source = ctx.source_range(import_decl.span);
+    let import_specifiers_span = Span::new(import_decl.span.start, import_decl.source.span.start);
+    let import_source = ctx.source_range(import_specifiers_span);
     let mut rule_fixes = fixer.new_fix_with_capacity(1);
 
     // "import { Foo, Bar } from 'foo'" => "import type { Foo, Bar } from 'foo'"
     //                                             ^^^^ add
-    rule_fixes.push(
-        fixer.replace(Span::new(import_decl.span.start, import_decl.span.start + 6), "import type"),
-    );
+    rule_fixes.push(fixer.replace(Span::sized(import_decl.span.start, 6), "import type"));
 
     if is_default_import {
         if let Ok(_opening_brace_token) = try_find_char(import_source, '{') {
@@ -3394,6 +3467,11 @@ export class Foo extends Bar {}
             const c = defineParallelPlugin()
             ",
             None,
+        ),
+        (
+            "\nimport Foo from'{'; type k = Foo",
+            "\nimport type Foo from'{'; type k = Foo",
+            Some(serde_json::json!([{ "prefer": "type-imports" }])),
         ),
     ];
 

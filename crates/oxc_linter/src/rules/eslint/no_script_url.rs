@@ -48,7 +48,7 @@ impl Rule for NoScriptUrl {
             AstKind::StringLiteral(literal)
                 if literal.value.cow_to_ascii_lowercase().starts_with("javascript:") =>
             {
-                emit_diagnostic(ctx, literal.span);
+                ctx.diagnostic(no_script_url_diagnostic(literal.span));
             }
             AstKind::TemplateLiteral(literal)
                 if !is_tagged_template_expression(ctx, node, literal.span) =>
@@ -63,7 +63,7 @@ impl Rule for NoScriptUrl {
                         .cow_to_ascii_lowercase()
                         .starts_with("javascript:")
                 {
-                    emit_diagnostic(ctx, literal.span);
+                    ctx.diagnostic(no_script_url_diagnostic(literal.span));
                 }
             }
             _ => {}
@@ -71,14 +71,10 @@ impl Rule for NoScriptUrl {
     }
 }
 
-fn emit_diagnostic(ctx: &LintContext, span: Span) {
-    ctx.diagnostic(no_script_url_diagnostic(Span::new(span.start, span.end)));
-}
-
 fn is_tagged_template_expression(ctx: &LintContext, node: &AstNode, literal_span: Span) -> bool {
     matches!(
         ctx.nodes().parent_kind(node.id()),
-        Some(AstKind::TaggedTemplateExpression(expr)) if expr.quasi.span == literal_span
+        AstKind::TaggedTemplateExpression(expr) if expr.quasi.span == literal_span
     )
 }
 

@@ -2,7 +2,142 @@
 
 All notable changes to this package will be documented in this file.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0).
+
+
+
+
+
+## [0.83.0] - 2025-08-29
+
+### 🚜 Refactor
+
+- 66a5673 ecmascript: Add `ToUint32` trait (#13272) (sapphi-red)
+
+
+## [0.82.3] - 2025-08-20
+
+### 🐛 Bug Fixes
+
+- 8f533aa codegen: Correct `CRLF` handling in comment processing (#13169) (copilot-swe-agent)
+
+
+
+
+## [0.82.0] - 2025-08-12
+
+### 💥 BREAKING CHANGES
+
+- 306b023 isolated-declarations: [**BREAKING**] Rewrite `declare module X` to `declare namespace X` (#12845) (leaysgur)
+
+
+## [0.81.0] - 2025-08-06
+
+### 💥 BREAKING CHANGES
+
+- 2cc1001 ast: [**BREAKING**] Remove `ExportDefaultDeclaration` `exported` field (#12808) (overlookmotel)
+
+### 🐛 Bug Fixes
+
+- 3eed87a codegen: Wrap parens for `TSUnionType` (#12830) (Boshen)
+
+
+## [0.80.0] - 2025-08-03
+
+### 📚 Documentation
+
+- 514322c rust: Add minimal documentation to example files in crates directory (#12731) (Copilot)
+- 45e2fe8 rust: Fix typos and grammar mistakes in Rust documentation comments (#12715) (Copilot)
+- de1de35 rust: Add comprehensive README.md documentation for all Rust crates (#12706) (Copilot)
+
+
+
+## [0.79.0] - 2025-07-30
+
+### 🐛 Bug Fixes
+
+- 3cdac4c isolated-declarations: Optional parameter property misses `undefined` type (#12579) (Dunqing)
+- 4f9cb0b isolated-declarations: Crash when transforming a class with a parameter property in a private constructor (#12578) (Dunqing)
+
+
+## [0.78.0] - 2025-07-24
+
+### 🐛 Bug Fixes
+
+- 9a9d78d isolated-declarations: Transformed parameter property has an incorrect type annotation (#12450) (Dunqing)
+- 89da027 isolated-declarations: Incorrect error when exported type is locally shadowed by an unexported variable (#12466) (Dunqing)
+
+
+
+
+## [0.77.1] - 2025-07-16
+
+### 🚀 Features
+
+- 9b14fbc ast: Add `ThisExpression` to `TSTypeName` (#12156) (Boshen)
+
+
+
+## [0.76.0] - 2025-07-08
+
+### 💥 BREAKING CHANGES
+
+- 8b30a5b codegen: [**BREAKING**] Introduce `CommentOptions` (#12114) (Boshen)
+
+
+## [0.75.1] - 2025-07-03
+
+### 🐛 Bug Fixes
+
+- 42976a8 isolated-declarations: Produce incorrect types when getter/setter with different types (#12046) (Dunqing)
+
+
+
+## [0.74.0] - 2025-06-23
+
+### 🐛 Bug Fixes
+
+- 957a3d5 isolated-declarations: Missing parameter properties of `constructor` overload (#11852) (Dunqing)
+- b8b3530 isolated-declarations: Don't transform constructor params if they don’t have accessbility (#11842) (Dunqing)
+
+
+
+## [0.73.1] - 2025-06-17
+
+### 🚜 Refactor
+
+- acc1b22 isolated-declarations: Shorten Span construction (#11688) (Ulrich Stark)
+
+
+
+# Changelog
+
+All notable changes to this package will be documented in this file.
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project does not adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) until v1.0.0.
+
+## [0.72.3] - 2025-06-06
+
+### Performance
+
+- 25167f2 parser: Parse ts type signature without rewind (#11443) (Boshen)
+
+## [0.72.2] - 2025-05-31
+
+### Bug Fixes
+
+- e93caa4 isolated-declarations: Omit empty variable declarations (#11372) (magic-akari)
+- daaa8f5 parser: Correctly parse decorators of property declaration (#11370) (magic-akari)
+
+### Testing
+
+- 03e8aa9 isolated-declarations: Fix multiline comment mismatch in windows (#11373) (Dunqing)
+
+## [0.72.1] - 2025-05-28
+
+### Bug Fixes
+
+- 3249ab6 isolated-declarations: Correctly emit string property keys for non-identifiable name (#11329) (magic-akari)
 
 ## [0.72.0] - 2025-05-24
 

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cell::Cell, num::NonZeroU8};
+use std::{backtrace, borrow::Cow, cell::Cell, num::NonZeroU8};
 
 use Tag::{
     EndAlign, EndConditionalContent, EndDedent, EndEntry, EndFill, EndGroup, EndIndent,
@@ -6,18 +6,22 @@ use Tag::{
     StartDedent, StartEntry, StartFill, StartGroup, StartIndent, StartIndentIfGroupBreaks,
     StartLabelled, StartLineSuffix,
 };
-use oxc_span::Span;
+use oxc_span::{GetSpan, Span};
 use oxc_syntax::identifier::{is_line_terminator, is_white_space_single_line};
 
 use super::{
-    Argument, Arguments, Buffer, GroupId, TextSize, TokenText, VecBuffer, format_element,
-    format_element::tag::{Condition, Tag},
+    Argument, Arguments, Buffer, Comments, GroupId, TextSize, TokenText, VecBuffer,
+    format_element::{
+        self,
+        tag::{Condition, Tag},
+    },
     prelude::{
         tag::{DedentMode, GroupMode, LabelId},
         *,
     },
+    separated::FormatSeparatedIter,
 };
-use crate::write;
+use crate::{TrailingSeparator, write};
 
 /// A line break that only gets printed if the enclosing `Group` doesn't fit on a single line.
 ///
@@ -146,7 +150,7 @@ pub const fn empty_line() -> Line {
 ///
 /// # Examples
 ///
-/// The line breaks are emitted as spaces if the enclosing `Group` fits on a a single line:
+/// The line breaks are emitted as spaces if the enclosing `Group` fits on a single line:
 /// ```
 /// use biome_formatter::{format, format_args};
 /// use biome_formatter::prelude::*;
@@ -285,24 +289,20 @@ impl std::fmt::Debug for StaticText {
 }
 
 /// Creates a text from a dynamic string and a range of the input source
-pub fn dynamic_text(text: &str, position: TextSize) -> DynamicText<'_> {
+pub fn dynamic_text(text: &str) -> DynamicText<'_> {
     // FIXME
     // debug_assert_no_newlines(text);
-    DynamicText { text, position }
+    DynamicText { text }
 }
 
 #[derive(Eq, PartialEq)]
 pub struct DynamicText<'a> {
     text: &'a str,
-    position: TextSize,
 }
 
-impl Format<'_> for DynamicText<'_> {
-    fn fmt(&self, f: &mut Formatter) -> FormatResult<()> {
-        f.write_element(FormatElement::DynamicText {
-            text: self.text.to_string().into_boxed_str(),
-            source_position: self.position,
-        })
+impl<'a> Format<'a> for DynamicText<'a> {
+    fn fmt(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
+        f.write_element(FormatElement::DynamicText { text: self.text })
     }
 }
 
@@ -325,7 +325,7 @@ pub struct SyntaxTokenCowSlice<'a> {
 }
 
 impl<'a> Format<'a> for SyntaxTokenCowSlice<'a> {
-    fn fmt(&self, f: &mut Formatter) -> FormatResult<()> {
+    fn fmt(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
         match &self.text {
             Cow::Borrowed(text) => {
                 // let range = TextRange::at(self.start, text.text_len());
@@ -344,8 +344,8 @@ impl<'a> Format<'a> for SyntaxTokenCowSlice<'a> {
                 })
             }
             Cow::Owned(text) => f.write_element(FormatElement::DynamicText {
-                text: text.to_string().into_boxed_str(),
-                source_position: self.span.start,
+                // TODO: Should use arena String to replace Cow::Owned.
+                text: f.context().allocator().alloc_str(text),
             }),
         }
     }
@@ -384,6 +384,7 @@ impl std::fmt::Debug for LocatedTokenText {
     }
 }
 
+#[track_caller]
 fn debug_assert_no_newlines(text: &str) {
     debug_assert!(
         !text.contains('\r'),
@@ -867,7 +868,7 @@ impl std::fmt::Debug for Indent<'_, '_> {
 ///                         text("Aligned, and indented"),
 ///                         dedent(&format_args![
 ///                             hard_line_break(),
-///                             text("aligned, not Intended"),
+///                             text("aligned, not indented"),
 ///                         ]),
 ///                     ])
 ///                 ]
@@ -876,7 +877,7 @@ impl std::fmt::Debug for Indent<'_, '_> {
 ///         ]
 ///     )?;
 ///     assert_eq!(
-///      "root\n        Indented\n          Indented and aligned\n        Indented, not aligned\n  Aligned\n          Aligned, and indented\n  aligned, not Intended\nroot level",
+///      "root\n        Indented\n          Indented and aligned\n        Indented, not aligned\n  Aligned\n          Aligned, and indented\n  aligned, not indented\nroot level",
 ///      elements.print()?.as_code()
 ///  );
 /// #    Ok(())
@@ -1505,8 +1506,8 @@ pub fn soft_line_indent_or_hard_space<'ast>(content: &impl Format<'ast>) -> Bloc
 }
 
 #[derive(Copy, Clone)]
-pub struct BlockIndent<'a, 'ast> {
-    content: Argument<'a, 'ast>,
+pub struct BlockIndent<'fmt, 'ast> {
+    content: Argument<'fmt, 'ast>,
     mode: IndentMode,
 }
 
@@ -2391,6 +2392,26 @@ where
         self
     }
 
+    pub fn entries_with_trailing_separator<F, I>(
+        &mut self,
+        entries: I,
+        separator: &'static str,
+        trailing_separator: TrailingSeparator,
+    ) -> &mut Self
+    where
+        F: Format<'ast> + GetSpan,
+        I: IntoIterator<Item = F>,
+    {
+        let iter = FormatSeparatedIter::new(entries.into_iter(), separator)
+            .with_trailing_separator(trailing_separator);
+
+        for entry in iter {
+            self.entry(&entry);
+        }
+
+        self
+    }
+
     /// Finishes the output and returns any error encountered.
     pub fn finish(&mut self) -> FormatResult<()> {
         self.result
@@ -2418,10 +2439,10 @@ where
 
     /// Adds a new node with the specified formatted content to the output, respecting any new lines
     /// that appear before the node in the input source.
-    pub fn entry(&mut self, span: Span, source_text: &str, content: &dyn Format<'ast>) {
+    pub fn entry(&mut self, span: Span, content: &dyn Format<'ast>) {
         self.result = self.result.and_then(|()| {
             if self.has_elements {
-                if self.has_lines_before(span, source_text) {
+                if self.has_lines_before(span) {
                     write!(self.fmt, empty_line())?;
                 } else {
                     self.separator.fmt(self.fmt)?;
@@ -2440,47 +2461,101 @@ where
         });
     }
 
-    // /// Adds an iterator of entries to the output. Each entry is a `(node, content)` tuple.
-    // pub fn entries<F, I>(&mut self, entries: I) -> &mut Self
-    // where
-    // F: Format,
-    // I: IntoIterator<Item = ((), F)>,
-    // {
-    // for (node, content) in entries {
-    // self.entry(node, &content)
-    // }
-    // self
-    // }
+    /// Adds an iterator of entries to the output. Each entry is a `(node, content)` tuple.
+    pub fn entries<'a, F, I>(&mut self, entries: I) -> &mut Self
+    where
+        F: Format<'ast> + GetSpan + 'a,
+        I: IntoIterator<Item = F>,
+    {
+        for content in entries {
+            self.entry(content.span(), &content);
+        }
+        self
+    }
+
+    pub fn entries_with_trailing_separator<'a, F, I>(
+        &mut self,
+        entries: I,
+        separator: &'static str,
+        trailing_separator: TrailingSeparator,
+    ) -> &mut Self
+    where
+        F: Format<'ast> + GetSpan + 'a,
+        I: IntoIterator<Item = F>,
+    {
+        let iter = FormatSeparatedIter::new(entries.into_iter(), separator)
+            .with_trailing_separator(trailing_separator);
+
+        for content in iter {
+            self.entry(content.span(), &content);
+        }
+        self
+    }
 
     pub fn finish(&mut self) -> FormatResult<()> {
         self.result
     }
 
     /// Get the number of line breaks between two consecutive SyntaxNodes in the tree
-    pub fn has_lines_before(&self, span: Span, source_text: &str) -> bool {
-        // Count the newlines in the leading trivia of the next node
-        let start = if let Some(comment) = self.fmt.comments().leading_comments(span.start).first()
-        {
-            comment.span.start
-        } else {
-            span.start
-        };
-        source_text[..start as usize]
-            .trim_end_matches(is_white_space_single_line)
-            .chars()
-            .rev()
-            .take_while(|c| is_line_terminator(*c))
-            .count()
-            > 1
+    pub fn has_lines_before(&self, span: Span) -> bool {
+        get_lines_before(span, self.fmt) > 1
     }
 }
 
 /// Get the number of line breaks between two consecutive SyntaxNodes in the tree
-pub fn get_lines_before(span: Span) -> usize {
-    // TODO:
+pub fn get_lines_before(span: Span, f: &Formatter) -> usize {
+    let mut start = span.start;
+
+    // Should skip the leading comments of the node.
+    let comments = f.comments().unprinted_comments();
+    if let Some(comment) = comments.first() {
+        if comment.span.end < start {
+            start = comment.span.start;
+        }
+    }
+
     // Count the newlines in the leading trivia of the next node
-    // if let Some(token) = next_node.first_token() { get_lines_before_token(&token) } else { 0 }
-    0
+    let mut count = 0;
+    let mut right_parent_start = span.end as usize;
+    for c in f.source_text()[..start as usize].chars().rev() {
+        if is_white_space_single_line(c) {
+            continue;
+        }
+
+        if c == '(' {
+            // We don't have a parenthesis node when `preserveParens` is turned off,
+            // but we will find the `(` and `)` around the node if it exists.
+            // If we find a `(`, we try to find the matching `)` and reset the count.
+            // This is necessary to avoid counting the newlines inside the parenthesis.
+
+            let Some((pos, ')')) =
+                f.source_text()[right_parent_start..].trim_start().chars().enumerate().next()
+            else {
+                return count;
+            };
+
+            right_parent_start = pos;
+            count = 0;
+            continue;
+        }
+
+        if !is_line_terminator(c) {
+            return count;
+        }
+
+        count += 1;
+    }
+
+    count
+}
+
+/// Get the number of line breaks between two consecutive SyntaxNodes in the tree
+pub fn get_lines_after(end: u32, source_text: &str) -> usize {
+    source_text[end as usize..]
+        .chars()
+        .filter(|&c| !is_white_space_single_line(c))
+        .take_while(|&c| is_line_terminator(c))
+        .count()
 }
 
 /// Builder to fill as many elements as possible on a single line.

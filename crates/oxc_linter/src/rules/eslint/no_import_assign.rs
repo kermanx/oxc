@@ -1,7 +1,10 @@
-use oxc_ast::{AstKind, ast::Expression};
+use oxc_ast::{
+    AstKind,
+    ast::{AssignmentTarget, AssignmentTargetMaybeDefault, Expression},
+};
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
-use oxc_semantic::{NodeId, SymbolId};
+use oxc_semantic::{AstNode, NodeId, Reference, SymbolId};
 use oxc_span::{GetSpan, Span};
 use oxc_syntax::operator::UnaryOperator;
 
@@ -58,28 +61,62 @@ impl Rule for NoImportAssign {
             let is_namespace_specifier = matches!(kind, AstKind::ImportNamespaceSpecifier(_));
             for reference in symbol_table.get_resolved_references(symbol_id) {
                 if is_namespace_specifier {
-                    let Some(parent_node) = ctx.nodes().parent_node(reference.node_id()) else {
-                        return;
-                    };
-                    if let AstKind::MemberExpression(expr) = parent_node.kind() {
-                        let Some(parent_parent_node) = ctx.nodes().parent_node(parent_node.id())
-                        else {
-                            return;
-                        };
+                    let parent_node = ctx.nodes().parent_node(reference.node_id());
+                    if parent_node.kind().is_member_expression_kind() {
+                        let expr = parent_node.kind();
+                        let parent_parent_node = ctx.nodes().parent_node(parent_node.id());
                         let is_unary_expression_with_delete_operator = |kind| matches!(kind, AstKind::UnaryExpression(expr) if expr.operator == UnaryOperator::Delete);
                         let parent_parent_kind = parent_parent_node.kind();
-                        if matches!(parent_parent_kind, AstKind::SimpleAssignmentTarget(_))
-                            // delete namespace.module
+                        if matches!(parent_parent_kind, AstKind::IdentifierReference(_))
                             || is_unary_expression_with_delete_operator(parent_parent_kind)
-                            // delete namespace?.module
-                            || matches!(parent_parent_kind, AstKind::ChainExpression(_) if ctx.nodes().parent_kind(parent_parent_node.id()).is_some_and(is_unary_expression_with_delete_operator))
+                            || matches!(parent_parent_kind, AstKind::ChainExpression(_) if is_unary_expression_with_delete_operator(ctx.nodes().parent_kind(parent_parent_node.id())))
                         {
-                            if let Some((span, _)) = expr.static_property_info() {
+                            if let Some((span, _)) = match expr {
+                                AstKind::StaticMemberExpression(expr) => {
+                                    Some(expr.static_property_info())
+                                }
+                                AstKind::ComputedMemberExpression(expr) => {
+                                    expr.static_property_info()
+                                }
+                                _ => return,
+                            } {
                                 if span != ctx.semantic().reference_span(reference) {
                                     return ctx
                                         .diagnostic(no_import_assign_diagnostic(expr.span()));
                                 }
                             }
+                        }
+                        // Check for assignment to namespace property
+                        match expr {
+                            AstKind::StaticMemberExpression(member_expr) => {
+                                let condition_met = is_assignment_condition_met(
+                                    &parent_parent_kind,
+                                    parent_node.span(),
+                                    true, // is_static
+                                );
+                                check_namespace_member_assignment(
+                                    &member_expr.object,
+                                    parent_node,
+                                    reference,
+                                    ctx,
+                                    condition_met,
+                                );
+                            }
+                            AstKind::ComputedMemberExpression(member_expr) => {
+                                let condition_met = is_assignment_condition_met(
+                                    &parent_parent_kind,
+                                    parent_node.span(),
+                                    false, // is_static
+                                );
+                                check_namespace_member_assignment(
+                                    &member_expr.object,
+                                    parent_node,
+                                    reference,
+                                    ctx,
+                                    condition_met,
+                                );
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -109,10 +146,9 @@ impl Rule for NoImportAssign {
 /// - `Reflect.setPrototypeOf`
 fn is_argument_of_well_known_mutation_function(node_id: NodeId, ctx: &LintContext<'_>) -> bool {
     let current_node = ctx.nodes().get_node(node_id);
-    let call_expression_node =
-        ctx.nodes().parent_node(node_id).and_then(|node| ctx.nodes().parent_kind(node.id()));
+    let call_expression_node = ctx.nodes().parent_kind(ctx.nodes().parent_id(node_id));
 
-    let Some(AstKind::CallExpression(expr)) = call_expression_node else {
+    let AstKind::CallExpression(expr) = call_expression_node else {
         return false;
     };
 
@@ -137,6 +173,83 @@ fn is_argument_of_well_known_mutation_function(node_id: NodeId, ctx: &LintContex
     }
 
     false
+}
+
+/// Helper to check if a namespace member expression is being assigned to
+fn check_namespace_member_assignment(
+    member_expr: &Expression,
+    parent_node: &AstNode,
+    reference: &Reference,
+    ctx: &LintContext,
+    condition_met: bool,
+) {
+    if !condition_met {
+        return;
+    }
+
+    let Expression::Identifier(obj_ident) = member_expr else { return };
+
+    let ref_node = ctx.nodes().get_node(reference.node_id());
+    if let AstKind::IdentifierReference(ref_ident) = ref_node.kind() {
+        if obj_ident.span == ref_ident.span {
+            ctx.diagnostic(no_import_assign_diagnostic(parent_node.span()));
+        }
+    }
+}
+
+/// Helper to determine if assignment condition is met for different parent kinds
+fn is_assignment_condition_met(
+    parent_parent_kind: &AstKind,
+    parent_node_span: Span,
+    is_static: bool,
+) -> bool {
+    match parent_parent_kind {
+        AstKind::AssignmentExpression(assign) => assign.left.span() == parent_node_span,
+        AstKind::UpdateExpression(update) => update.argument.span() == parent_node_span,
+        AstKind::ForInStatement(for_in) => for_in.left.span() == parent_node_span,
+        AstKind::ForOfStatement(for_of) => for_of.left.span() == parent_node_span,
+        AstKind::ArrayAssignmentTarget(array_target) => {
+            array_target.elements.iter().any(|el| match el.as_ref() {
+                Some(AssignmentTargetMaybeDefault::StaticMemberExpression(expr)) if is_static => {
+                    expr.span == parent_node_span
+                }
+                Some(AssignmentTargetMaybeDefault::ComputedMemberExpression(expr))
+                    if !is_static =>
+                {
+                    expr.span == parent_node_span
+                }
+                _ => false,
+            })
+        }
+        AstKind::AssignmentTargetPropertyProperty(prop_target) => match &prop_target.binding {
+            AssignmentTargetMaybeDefault::StaticMemberExpression(expr) if is_static => {
+                expr.span == parent_node_span
+            }
+            AssignmentTargetMaybeDefault::ComputedMemberExpression(expr) if !is_static => {
+                expr.span == parent_node_span
+            }
+            _ => false,
+        },
+        AstKind::AssignmentTargetWithDefault(with_default) => match &with_default.binding {
+            AssignmentTarget::StaticMemberExpression(expr) if is_static => {
+                expr.span == parent_node_span
+            }
+            AssignmentTarget::ComputedMemberExpression(expr) if !is_static => {
+                expr.span == parent_node_span
+            }
+            _ => false,
+        },
+        AstKind::AssignmentTargetRest(rest_target) => match &rest_target.target {
+            AssignmentTarget::StaticMemberExpression(expr) if is_static => {
+                expr.span == parent_node_span
+            }
+            AssignmentTarget::ComputedMemberExpression(expr) if !is_static => {
+                expr.span == parent_node_span
+            }
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 #[test]

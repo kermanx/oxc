@@ -27,6 +27,7 @@ impl ESTree for Error<'_> {
         state.serialize_field("message", &self.message);
         state.serialize_field("labels", &self.labels);
         state.serialize_field("helpMessage", &self.help_message);
+        state.serialize_field("codeframe", &self.codeframe);
         state.end();
     }
 }
@@ -45,8 +46,7 @@ impl ESTree for ErrorLabel<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) {
         let mut state = serializer.serialize_struct();
         state.serialize_field("message", &self.message);
-        state.serialize_field("start", &self.span.start);
-        state.serialize_field("end", &self.span.end);
+        state.serialize_span(self.span);
         state.end();
     }
 }
@@ -66,10 +66,9 @@ impl ESTree for EcmaScriptModule<'_> {
 impl ESTree for StaticImport<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) {
         let mut state = serializer.serialize_struct();
-        state.serialize_field("start", &self.span.start);
-        state.serialize_field("end", &self.span.end);
         state.serialize_field("moduleRequest", &self.module_request);
         state.serialize_field("entries", &self.entries);
+        state.serialize_span(self.span);
         state.end();
     }
 }
@@ -77,9 +76,8 @@ impl ESTree for StaticImport<'_> {
 impl ESTree for StaticExport<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) {
         let mut state = serializer.serialize_struct();
-        state.serialize_field("start", &self.span.start);
-        state.serialize_field("end", &self.span.end);
         state.serialize_field("entries", &self.entries);
+        state.serialize_span(self.span);
         state.end();
     }
 }

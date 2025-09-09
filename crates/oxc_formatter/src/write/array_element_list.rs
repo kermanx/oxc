@@ -8,18 +8,22 @@ use crate::{
         Buffer, Comments, Format, FormatResult, Formatter, GroupId, prelude::*,
         separated::FormatSeparatedIter,
     },
+    generated::ast_nodes::AstNode,
     write,
 };
 
 use super::utils::array::write_array_node;
 
 pub struct ArrayElementList<'a, 'b> {
-    elements: &'b Vec<'a, ArrayExpressionElement<'a>>,
+    elements: &'b AstNode<'a, Vec<'a, ArrayExpressionElement<'a>>>,
     group_id: Option<GroupId>,
 }
 
 impl<'a, 'b> ArrayElementList<'a, 'b> {
-    pub fn new(elements: &'b Vec<'a, ArrayExpressionElement<'a>>, group_id: GroupId) -> Self {
+    pub fn new(
+        elements: &'b AstNode<'a, Vec<'a, ArrayExpressionElement<'a>>>,
+        group_id: GroupId,
+    ) -> Self {
         Self { elements, group_id: Some(group_id) }
     }
 }
@@ -29,7 +33,7 @@ impl<'a> Format<'a> for ArrayElementList<'a, '_> {
         let expand_lists = f.context().options().expand == Expand::Always;
         let layout = if expand_lists {
             ArrayLayout::OnePerLine
-        } else if can_concisely_print_array_list(self.elements, f.context().comments()) {
+        } else if can_concisely_print_array_list(self.elements.parent.span(), self.elements, f) {
             ArrayLayout::Fill
         } else {
             ArrayLayout::OnePerLine
@@ -42,31 +46,34 @@ impl<'a> Format<'a> for ArrayElementList<'a, '_> {
                 let mut filler = f.fill();
 
                 // Using format_separated is valid in this case as can_print_fill does not allow holes
-                for (element, formatted) in self.elements.iter().zip(
-                    FormatSeparatedIter::new(self.elements.iter(), ",")
-                        .with_trailing_separator(trailing_separator)
-                        .with_group_id(self.group_id),
-                ) {
+                for element in FormatSeparatedIter::new(self.elements.iter(), ",")
+                    .with_trailing_separator(trailing_separator)
+                    .with_group_id(self.group_id)
+                {
                     filler.entry(
                         &format_once(|f| {
-                            if get_lines_before(element.span()) > 1 {
+                            if get_lines_before(element.span(), f) > 1 {
                                 write!(f, empty_line())
                             } else if f
                                 .comments()
-                                .has_leading_own_line_comment(element.span().start)
+                                .has_leading_own_line_comments(element.span().start)
                             {
                                 write!(f, hard_line_break())
                             } else {
                                 write!(f, soft_line_break_or_space())
                             }
                         }),
-                        &formatted,
+                        &element,
                     );
                 }
 
                 filler.finish()
             }
-            ArrayLayout::OnePerLine => write_array_node(self.elements, f),
+            ArrayLayout::OnePerLine => write_array_node(
+                self.elements.len(),
+                self.elements.iter().map(|e| if e.is_elision() { None } else { Some(e) }),
+                f,
+            ),
         }
     }
 }
@@ -103,48 +110,66 @@ enum ArrayLayout {
 /// with 10 or less characters, potentially wrapped in a "short"
 /// unary expression (+, -, ~ or !)
 pub fn can_concisely_print_array_list(
-    list: &Vec<'_, ArrayExpressionElement<'_>>,
-    comments: &Comments,
+    array_expression_span: Span,
+    list: &[ArrayExpressionElement<'_>],
+    f: &Formatter<'_, '_>,
 ) -> bool {
     if list.is_empty() {
         return false;
     }
 
-    list.iter().all(|item| {
-        let end = match &item {
-            ArrayExpressionElement::NumericLiteral(literal) => literal.span.end,
-            ArrayExpressionElement::UnaryExpression(expr) => {
-                let signed = expr.operator.is_arithmetic();
-                let argument = &expr.argument;
+    let source_text = f.source_text();
+    let comments = f.comments();
 
-                match argument {
-                    Expression::NumericLiteral(literal) => {
-                        if signed && !comments.has_comments(literal.span) {
-                            literal.span.end
-                        } else {
-                            return false;
-                        }
-                    }
-                    _ => return false,
+    let mut comments_iter = comments.filter_comments_in_span(array_expression_span);
+
+    for item in list {
+        match item {
+            ArrayExpressionElement::NumericLiteral(literal) => {}
+            ArrayExpressionElement::UnaryExpression(unary_expr) => {
+                let signed = unary_expr.operator.is_arithmetic();
+                let argument = &unary_expr.argument;
+
+                if !signed
+                    || !matches!(argument, Expression::NumericLiteral(_))
+                    || has_comment_inside_unary(&mut comments_iter, unary_expr.span)
+                {
+                    return false;
                 }
             }
             _ => return false,
-        };
+        }
+    }
 
-        // Does not have a line comment ending on the same line
-        // ```javascript
-        // [ a // not this
-        //  b];
-        //
-        // [
-        //   // This is fine
-        //   thats
-        // ]
-        // ```
-        !comments
-            .trailing_comments(end)
-            .iter()
-            .filter(|comment| comment.kind().is_line())
-            .any(|comment| comment.lines_before() == 0)
-    })
+    // Does not have a line comment ending on the same line
+    // ```javascript
+    // [ a // not this
+    //  b];
+    //
+    // [
+    //   // This is fine
+    //   thats
+    // ]
+    // ```
+
+    !comments
+        .filter_comments_in_span(array_expression_span)
+        .any(|comment| comments.is_trailing_line_comment(comment))
+}
+
+// ```js
+// - (/* comment */ 1)
+//    ^^^^^^^^^^^^ // This is a unary expression with a comment inside
+// ```
+fn has_comment_inside_unary<'a>(
+    comments_iter: &mut impl Iterator<Item = &'a Comment>,
+    unary_expr_span: Span,
+) -> bool {
+    // `comments_iter` is avoid repeatedly iterating over the same comments from the start
+    for comment in comments_iter.by_ref() {
+        if comment.span.start > unary_expr_span.start {
+            return unary_expr_span.contains_inclusive(comment.span);
+        }
+    }
+    false
 }

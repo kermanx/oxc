@@ -5,10 +5,15 @@ use std::{
 
 use rustc_hash::FxHashMap;
 
-use super::{LintConfig, LintPlugins, overrides::OxlintOverrides};
 use crate::{
-    AllowWarnDeny,
+    AllowWarnDeny, LintPlugins,
+    external_plugin_store::{ExternalPluginStore, ExternalRuleId},
     rules::{RULES, RuleEnum},
+};
+
+use super::{
+    BuiltinLintPlugins, LintConfig, OxlintEnv, OxlintGlobals, categories::OxlintCategories,
+    overrides::GlobSet,
 };
 
 // TODO: support `categories` et. al. in overrides.
@@ -17,40 +22,103 @@ pub struct ResolvedLinterState {
     // TODO: Arc + Vec -> SyncVec? It would save a pointer dereference.
     pub rules: Arc<[(RuleEnum, AllowWarnDeny)]>,
     pub config: Arc<LintConfig>,
+
+    pub external_rules: Arc<[(ExternalRuleId, AllowWarnDeny)]>,
 }
 
 impl Clone for ResolvedLinterState {
     fn clone(&self) -> Self {
-        Self { rules: Arc::clone(&self.rules), config: Arc::clone(&self.config) }
+        Self {
+            rules: Arc::clone(&self.rules),
+            config: Arc::clone(&self.config),
+            external_rules: Arc::clone(&self.external_rules),
+        }
     }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ResolvedOxlintOverrides(Vec<ResolvedOxlintOverride>);
+
+impl ResolvedOxlintOverrides {
+    pub(crate) fn new(overrides: Vec<ResolvedOxlintOverride>) -> Self {
+        Self(overrides)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn iter(&self) -> std::slice::Iter<'_, ResolvedOxlintOverride> {
+        self.0.iter()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedOxlintOverride {
+    pub files: GlobSet,
+    pub env: Option<OxlintEnv>,
+    pub globals: Option<OxlintGlobals>,
+    pub plugins: Option<LintPlugins>,
+    pub rules: ResolvedOxlintOverrideRules,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedOxlintOverrideRules {
+    pub(crate) builtin_rules: Vec<(RuleEnum, AllowWarnDeny)>,
+    pub(crate) external_rules: Vec<(ExternalRuleId, AllowWarnDeny)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Config {
     /// The basic linter state for this configuration.
+    /// For files that match no overrides, this lint config will be used.
     pub(crate) base: ResolvedLinterState,
 
+    /// Used as the base config for applying overrides
+    /// NOTE: `AllowWarnDeny::Allow` should exist here to allow us to correctly
+    ///       keep a rule disabled when an override is applied with a different plugin set
+    pub(crate) base_rules: Vec<(RuleEnum, AllowWarnDeny)>,
+
+    /// Categories specified at the root. This is used to resolve which rules
+    /// should be enabled when a different plugin is enabled as part of an override.
+    pub(crate) categories: OxlintCategories,
+
     /// An optional set of overrides to apply to the base state depending on the file being linted.
-    pub(crate) overrides: OxlintOverrides,
+    pub(crate) overrides: ResolvedOxlintOverrides,
 }
 
 impl Config {
     pub fn new(
         rules: Vec<(RuleEnum, AllowWarnDeny)>,
+        mut external_rules: Vec<(ExternalRuleId, AllowWarnDeny)>,
+        categories: OxlintCategories,
         config: LintConfig,
-        overrides: OxlintOverrides,
+        overrides: ResolvedOxlintOverrides,
     ) -> Self {
         Config {
             base: ResolvedLinterState {
-                rules: Arc::from(rules.into_boxed_slice()),
+                rules: Arc::from(
+                    rules
+                        .iter()
+                        .filter(|(_, severity)| severity.is_warn_deny())
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                ),
                 config: Arc::new(config),
+                external_rules: Arc::from({
+                    external_rules.retain(|(_, sev)| sev.is_warn_deny());
+                    external_rules.into_boxed_slice()
+                }),
             },
+            base_rules: rules,
+            categories,
             overrides,
         }
     }
 
-    pub fn plugins(&self) -> LintPlugins {
-        self.base.config.plugins
+    pub fn plugins(&self) -> &LintPlugins {
+        &self.base.config.plugins
     }
 
     pub fn rules(&self) -> &Arc<[(RuleEnum, AllowWarnDeny)]> {
@@ -76,8 +144,9 @@ impl Config {
             })
             .unwrap_or(path);
 
+        let path = relative_path.to_string_lossy();
         let overrides_to_apply =
-            self.overrides.iter().filter(|config| config.files.is_match(relative_path));
+            self.overrides.iter().filter(|config| config.files.is_match(path.as_ref()));
 
         let mut overrides_to_apply = overrides_to_apply.peekable();
 
@@ -87,31 +156,77 @@ impl Config {
 
         let mut env = self.base.config.env.clone();
         let mut globals = self.base.config.globals.clone();
-        let mut plugins = self.base.config.plugins;
+        let mut plugins = self.base.config.plugins.clone();
 
         for override_config in overrides_to_apply.clone() {
-            if let Some(override_plugins) = override_config.plugins {
-                plugins |= override_plugins;
+            if let Some(override_plugins) = &override_config.plugins {
+                plugins.builtin |= override_plugins.builtin;
+                for p in &override_plugins.external {
+                    plugins.external.insert(p.clone());
+                }
             }
         }
 
         let mut rules = self
-            .base
-            .rules
+            .base_rules
             .iter()
-            .filter(|(rule, _)| plugins.contains(LintPlugins::from(rule.plugin_name())))
+            .filter(|(rule, _)| {
+                plugins.builtin.contains(BuiltinLintPlugins::from(rule.plugin_name()))
+            })
             .cloned()
             .collect::<FxHashMap<_, _>>();
 
         let all_rules = RULES
             .iter()
-            .filter(|rule| plugins.contains(LintPlugins::from(rule.plugin_name())))
+            .filter(|rule| plugins.builtin.contains(BuiltinLintPlugins::from(rule.plugin_name())))
             .cloned()
             .collect::<Vec<_>>();
 
+        let mut external_rules = FxHashMap::default();
+
+        // Track which plugins have already had their category rules applied.
+        // Start with the root plugins since they already have categories applied in base_rules.
+        let mut configured_plugins = self.base.config.plugins.builtin;
+
         for override_config in overrides_to_apply {
-            if !override_config.rules.is_empty() {
-                override_config.rules.override_rules(&mut rules, &all_rules);
+            if let Some(override_plugins) = &override_config.plugins {
+                if *override_plugins != plugins {
+                    // Only apply categories to plugins that:
+                    // 1. Are in the current accumulated plugin set
+                    // 2. Have NOT been configured yet (not in root or previous overrides)
+                    let unconfigured_plugins = plugins.builtin & !configured_plugins;
+
+                    if !unconfigured_plugins.is_empty() {
+                        for (rule, severity) in all_rules.iter().filter_map(|rule| {
+                            let rule_plugin = BuiltinLintPlugins::from(rule.plugin_name());
+                            // Only apply categories to rules from unconfigured plugins
+                            if unconfigured_plugins.contains(rule_plugin) {
+                                self.categories
+                                    .get(&rule.category())
+                                    .map(|severity| (rule.clone(), severity))
+                            } else {
+                                None
+                            }
+                        }) {
+                            rules.entry(rule).or_insert(*severity);
+                        }
+                        // Mark these plugins as configured
+                        configured_plugins |= unconfigured_plugins;
+                    }
+                }
+            }
+
+            for (rule, severity) in &override_config.rules.builtin_rules {
+                if *severity == AllowWarnDeny::Allow {
+                    rules.remove(rule);
+                } else {
+                    let _ = rules.remove(rule);
+                    rules.insert(rule.clone(), *severity);
+                }
+            }
+
+            for (external_rule_id, severity) in &override_config.rules.external_rules {
+                external_rules.insert(*external_rule_id, *severity);
             }
 
             if let Some(override_env) = &override_config.env {
@@ -137,8 +252,19 @@ impl Config {
             Arc::new(config)
         };
 
-        let rules = rules.into_iter().collect::<Vec<_>>();
-        ResolvedLinterState { rules: Arc::from(rules.into_boxed_slice()), config }
+        let rules =
+            rules.into_iter().filter(|(_, severity)| severity.is_warn_deny()).collect::<Vec<_>>();
+
+        let external_rules = external_rules
+            .into_iter()
+            .filter(|(_, severity)| severity.is_warn_deny())
+            .collect::<Vec<_>>();
+
+        ResolvedLinterState {
+            rules: Arc::from(rules.into_boxed_slice()),
+            config,
+            external_rules: Arc::from(external_rules.into_boxed_slice()),
+        }
     }
 }
 
@@ -151,35 +277,57 @@ impl Config {
 pub struct ConfigStore {
     base: Config,
     nested_configs: FxHashMap<PathBuf, Config>,
+    external_plugin_store: Arc<ExternalPluginStore>,
 }
 
 impl ConfigStore {
-    pub fn new(base_config: Config, nested_configs: FxHashMap<PathBuf, Config>) -> Self {
-        Self { base: base_config, nested_configs }
+    pub fn new(
+        base_config: Config,
+        nested_configs: FxHashMap<PathBuf, Config>,
+        external_plugin_store: ExternalPluginStore,
+    ) -> Self {
+        Self {
+            base: base_config,
+            nested_configs,
+            external_plugin_store: Arc::new(external_plugin_store),
+        }
     }
 
-    pub fn number_of_rules(&self) -> Option<usize> {
-        self.nested_configs.is_empty().then_some(self.base.base.rules.len())
+    /// Returns the number of rules, optionally filtering out tsgolint rules if type_aware_enabled is false.
+    pub fn number_of_rules(&self, type_aware_enabled: bool) -> Option<usize> {
+        if !self.nested_configs.is_empty() {
+            return None;
+        }
+        let count = if type_aware_enabled {
+            self.base.base.rules.len()
+        } else {
+            self.base.base.rules.iter().filter(|(rule, _)| !rule.is_tsgolint_rule()).count()
+        };
+        Some(count)
     }
 
     pub fn rules(&self) -> &Arc<[(RuleEnum, AllowWarnDeny)]> {
         &self.base.base.rules
     }
 
-    pub fn plugins(&self) -> LintPlugins {
-        self.base.base.config.plugins
+    pub fn plugins(&self) -> &LintPlugins {
+        &self.base.base.config.plugins
     }
 
-    pub(crate) fn resolve(&self, path: &Path) -> ResolvedLinterState {
-        let resolved_config = if self.nested_configs.is_empty() {
+    pub(crate) fn get_related_config(&self, path: &Path) -> &Config {
+        if self.nested_configs.is_empty() {
             &self.base
         } else if let Some(config) = self.get_nearest_config(path) {
             config
         } else {
             &self.base
-        };
+        }
+    }
 
-        Config::apply_overrides(resolved_config, path)
+    // NOTE: This function is not crate visible because it is used in `oxlint` as well to resolve configs
+    // for the `tsgolint` linter.
+    pub fn resolve(&self, path: &Path) -> ResolvedLinterState {
+        Config::apply_overrides(self.get_related_config(path), path)
     }
 
     fn get_nearest_config(&self, path: &Path) -> Option<&Config> {
@@ -194,16 +342,38 @@ impl ConfigStore {
         }
         None
     }
+
+    #[cfg_attr(not(all(feature = "oxlint2", not(feature = "disable_oxlint2"))), expect(dead_code))]
+    pub(crate) fn resolve_plugin_rule_names(
+        &self,
+        external_rule_id: ExternalRuleId,
+    ) -> (/* plugin name */ &str, /* rule name */ &str) {
+        self.external_plugin_store.resolve_plugin_rule_names(external_rule_id)
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use rustc_hash::FxHashMap;
+    use std::{path::PathBuf, str::FromStr};
 
-    use super::{ConfigStore, OxlintOverrides};
+    use rustc_hash::{FxHashMap, FxHashSet};
+    use serde_json::Value;
+
+    use super::{ConfigStore, ResolvedOxlintOverrides};
     use crate::{
-        AllowWarnDeny, LintPlugins, RuleEnum,
-        config::{LintConfig, OxlintEnv, OxlintGlobals, OxlintSettings, config_store::Config},
+        AllowWarnDeny, BuiltinLintPlugins, ExternalPluginStore, LintPlugins, RuleCategory,
+        RuleEnum,
+        config::{
+            LintConfig, OxlintEnv, OxlintGlobals, OxlintSettings,
+            categories::OxlintCategories,
+            config_store::{Config, ResolvedOxlintOverride, ResolvedOxlintOverrideRules},
+            overrides::GlobSet,
+        },
+        rule::Rule,
+        rules::{
+            EslintCurly, EslintNoUnusedVars, ReactJsxFilenameExtension, TypescriptNoExplicitAny,
+            TypescriptNoMisusedPromises,
+        },
     };
 
     macro_rules! from_json {
@@ -221,13 +391,23 @@ mod test {
     #[test]
     fn test_no_rules() {
         let base_rules = vec![no_explicit_any()];
-        let overrides: OxlintOverrides = from_json!([{
-            "files": ["*.test.{ts,tsx}"],
-            "rules": {}
+        let overrides = ResolvedOxlintOverrides::new(vec![ResolvedOxlintOverride {
+            env: None,
+            files: GlobSet::new(vec!["*.test.{ts,tsx}"]),
+            plugins: None,
+            globals: None,
+            rules: ResolvedOxlintOverrideRules { builtin_rules: vec![], external_rules: vec![] },
         }]);
         let store = ConfigStore::new(
-            Config::new(base_rules, LintConfig::default(), overrides),
+            Config::new(
+                base_rules,
+                vec![],
+                OxlintCategories::default(),
+                LintConfig::default(),
+                overrides,
+            ),
             FxHashMap::default(),
+            ExternalPluginStore::default(),
         );
 
         let rules_for_source_file = store.resolve("App.tsx".as_ref());
@@ -242,14 +422,30 @@ mod test {
     #[test]
     fn test_no_rules_and_new_plugins() {
         let base_rules = vec![no_explicit_any()];
-        let overrides: OxlintOverrides = from_json!([{
-            "files": ["*.test.{ts,tsx}"],
-            "plugins": ["react", "typescript", "unicorn", "oxc", "jsx-a11y"],
-            "rules": {}
+        let overrides = ResolvedOxlintOverrides::new(vec![ResolvedOxlintOverride {
+            env: None,
+            files: GlobSet::new(vec!["*.test.{ts,tsx}"]),
+            plugins: Some(LintPlugins::new(
+                BuiltinLintPlugins::REACT
+                    .union(BuiltinLintPlugins::TYPESCRIPT)
+                    .union(BuiltinLintPlugins::UNICORN)
+                    .union(BuiltinLintPlugins::OXC)
+                    .union(BuiltinLintPlugins::JSX_A11Y),
+                FxHashSet::default(),
+            )),
+            globals: None,
+            rules: ResolvedOxlintOverrideRules { builtin_rules: vec![], external_rules: vec![] },
         }]);
         let store = ConfigStore::new(
-            Config::new(base_rules, LintConfig::default(), overrides),
+            Config::new(
+                base_rules,
+                vec![],
+                OxlintCategories::default(),
+                LintConfig::default(),
+                overrides,
+            ),
             FxHashMap::default(),
+            ExternalPluginStore::default(),
         );
 
         let rules_for_source_file = store.resolve("App.tsx".as_ref());
@@ -263,18 +459,32 @@ mod test {
     #[test]
     fn test_remove_rule() {
         let base_rules = vec![no_explicit_any()];
-        let overrides: OxlintOverrides = from_json!([{
-            "files": ["*.test.{ts,tsx}"],
-            "rules": {
-                "@typescript-eslint/no-explicit-any": "off"
-            }
+        let overrides = ResolvedOxlintOverrides::new(vec![ResolvedOxlintOverride {
+            env: None,
+            files: GlobSet::new(vec!["*.test.{ts,tsx}"]),
+            plugins: None,
+            globals: None,
+            rules: ResolvedOxlintOverrideRules {
+                builtin_rules: vec![(
+                    RuleEnum::TypescriptNoExplicitAny(TypescriptNoExplicitAny::default()),
+                    AllowWarnDeny::Allow,
+                )],
+                external_rules: vec![],
+            },
         }]);
 
         let store = ConfigStore::new(
-            Config::new(base_rules, LintConfig::default(), overrides),
+            Config::new(
+                base_rules,
+                vec![],
+                OxlintCategories::default(),
+                LintConfig::default(),
+                overrides,
+            ),
             FxHashMap::default(),
+            ExternalPluginStore::default(),
         );
-        assert_eq!(store.number_of_rules(), Some(1));
+        assert_eq!(store.number_of_rules(false), Some(1));
 
         let rules_for_source_file = store.resolve("App.tsx".as_ref());
         assert_eq!(rules_for_source_file.rules.len(), 1);
@@ -286,18 +496,32 @@ mod test {
     #[test]
     fn test_add_rule() {
         let base_rules = vec![no_explicit_any()];
-        let overrides = from_json!([{
-            "files": ["src/**/*.{ts,tsx}"],
-            "rules": {
-                "no-unused-vars": "warn"
-            }
+        let overrides = ResolvedOxlintOverrides::new(vec![ResolvedOxlintOverride {
+            env: None,
+            files: GlobSet::new(vec!["src/**/*.{ts,tsx}"]),
+            plugins: None,
+            globals: None,
+            rules: ResolvedOxlintOverrideRules {
+                builtin_rules: vec![(
+                    RuleEnum::EslintNoUnusedVars(EslintNoUnusedVars::default()),
+                    AllowWarnDeny::Warn,
+                )],
+                external_rules: vec![],
+            },
         }]);
 
         let store = ConfigStore::new(
-            Config::new(base_rules, LintConfig::default(), overrides),
+            Config::new(
+                base_rules,
+                vec![],
+                OxlintCategories::default(),
+                LintConfig::default(),
+                overrides,
+            ),
             FxHashMap::default(),
+            ExternalPluginStore::default(),
         );
-        assert_eq!(store.number_of_rules(), Some(1));
+        assert_eq!(store.number_of_rules(false), Some(1));
 
         assert_eq!(store.resolve("App.tsx".as_ref()).rules.len(), 1);
         assert_eq!(store.resolve("src/App.tsx".as_ref()).rules.len(), 2);
@@ -309,18 +533,32 @@ mod test {
     #[test]
     fn test_change_rule_severity() {
         let base_rules = vec![no_explicit_any()];
-        let overrides = from_json!([{
-            "files": ["src/**/*.{ts,tsx}"],
-            "rules": {
-                "no-explicit-any": "error"
-            }
+        let overrides = ResolvedOxlintOverrides::new(vec![ResolvedOxlintOverride {
+            env: None,
+            files: GlobSet::new(vec!["src/**/*.{ts,tsx}"]),
+            plugins: None,
+            globals: None,
+            rules: ResolvedOxlintOverrideRules {
+                builtin_rules: vec![(
+                    RuleEnum::TypescriptNoExplicitAny(TypescriptNoExplicitAny::default()),
+                    AllowWarnDeny::Deny,
+                )],
+                external_rules: vec![],
+            },
         }]);
 
         let store = ConfigStore::new(
-            Config::new(base_rules, LintConfig::default(), overrides),
+            Config::new(
+                base_rules,
+                vec![],
+                OxlintCategories::default(),
+                LintConfig::default(),
+                overrides,
+            ),
             FxHashMap::default(),
+            ExternalPluginStore::default(),
         );
-        assert_eq!(store.number_of_rules(), Some(1));
+        assert_eq!(store.number_of_rules(false), Some(1));
 
         let app = store.resolve("App.tsx".as_ref()).rules;
         assert_eq!(app.len(), 1);
@@ -334,56 +572,79 @@ mod test {
     #[test]
     fn test_add_plugins() {
         let base_config = LintConfig {
-            plugins: LintPlugins::IMPORT,
-            env: OxlintEnv::default(),
-            settings: OxlintSettings::default(),
-            globals: OxlintGlobals::default(),
-            path: None,
+            plugins: LintPlugins::new(BuiltinLintPlugins::IMPORT, FxHashSet::default()),
+            ..Default::default()
         };
-        let overrides = from_json!([{
-            "files": ["*.jsx", "*.tsx"],
-            "plugins": ["react"],
-        }, {
-            "files": ["*.ts", "*.tsx"],
-            "plugins": ["typescript"],
-        }]);
+        let overrides = ResolvedOxlintOverrides::new(vec![
+            ResolvedOxlintOverride {
+                env: None,
+                files: GlobSet::new(vec!["*.jsx", "*.tsx"]),
+                plugins: Some(LintPlugins::new(BuiltinLintPlugins::REACT, FxHashSet::default())),
+                globals: None,
+                rules: ResolvedOxlintOverrideRules {
+                    builtin_rules: vec![],
+                    external_rules: vec![],
+                },
+            },
+            ResolvedOxlintOverride {
+                env: None,
+                files: GlobSet::new(vec!["*.ts", "*.tsx"]),
+                plugins: Some(LintPlugins::new(
+                    BuiltinLintPlugins::TYPESCRIPT,
+                    FxHashSet::default(),
+                )),
+                globals: None,
+                rules: ResolvedOxlintOverrideRules {
+                    builtin_rules: vec![],
+                    external_rules: vec![],
+                },
+            },
+        ]);
 
-        let store =
-            ConfigStore::new(Config::new(vec![], base_config, overrides), FxHashMap::default());
-        assert_eq!(store.base.base.config.plugins, LintPlugins::IMPORT);
+        let store = ConfigStore::new(
+            Config::new(vec![], vec![], OxlintCategories::default(), base_config, overrides),
+            FxHashMap::default(),
+            ExternalPluginStore::default(),
+        );
+
+        assert_eq!(store.base.base.config.plugins.builtin, BuiltinLintPlugins::IMPORT);
 
         let app = store.resolve("other.mjs".as_ref()).config;
-        assert_eq!(app.plugins, LintPlugins::IMPORT);
+        assert_eq!(app.plugins.builtin, BuiltinLintPlugins::IMPORT);
 
         let app = store.resolve("App.jsx".as_ref()).config;
-        assert_eq!(app.plugins, LintPlugins::IMPORT | LintPlugins::REACT);
+        assert_eq!(app.plugins.builtin, BuiltinLintPlugins::IMPORT | BuiltinLintPlugins::REACT);
 
         let app = store.resolve("App.ts".as_ref()).config;
-        assert_eq!(app.plugins, LintPlugins::IMPORT | LintPlugins::TYPESCRIPT);
+        assert_eq!(
+            app.plugins.builtin,
+            BuiltinLintPlugins::IMPORT | BuiltinLintPlugins::TYPESCRIPT
+        );
 
         let app = store.resolve("App.tsx".as_ref()).config;
-        assert_eq!(app.plugins, LintPlugins::IMPORT | LintPlugins::REACT | LintPlugins::TYPESCRIPT);
+        assert_eq!(
+            app.plugins.builtin,
+            BuiltinLintPlugins::IMPORT | BuiltinLintPlugins::REACT | BuiltinLintPlugins::TYPESCRIPT
+        );
     }
 
     #[test]
     fn test_add_env() {
-        let base_config = LintConfig {
-            env: OxlintEnv::default(),
-            plugins: LintPlugins::ESLINT,
-            settings: OxlintSettings::default(),
-            globals: OxlintGlobals::default(),
-            path: None,
-        };
-
-        let overrides = from_json!([{
-            "files": ["*.tsx"],
-            "env": {
-                "es2024": true
-            },
+        let base_config =
+            LintConfig { plugins: BuiltinLintPlugins::ESLINT.into(), ..Default::default() };
+        let overrides = ResolvedOxlintOverrides::new(vec![ResolvedOxlintOverride {
+            env: Some(OxlintEnv::from_iter(["es2024".to_string()])),
+            files: GlobSet::new(vec!["*.tsx"]),
+            plugins: None,
+            globals: None,
+            rules: ResolvedOxlintOverrideRules { builtin_rules: vec![], external_rules: vec![] },
         }]);
 
-        let store =
-            ConfigStore::new(Config::new(vec![], base_config, overrides), FxHashMap::default());
+        let store = ConfigStore::new(
+            Config::new(vec![], vec![], OxlintCategories::default(), base_config, overrides),
+            FxHashMap::default(),
+            ExternalPluginStore::default(),
+        );
         assert!(!store.base.base.config.env.contains("React"));
 
         let app = store.resolve("App.tsx".as_ref()).config;
@@ -392,23 +653,21 @@ mod test {
 
     #[test]
     fn test_replace_env() {
-        let base_config = LintConfig {
-            env: OxlintEnv::from_iter(["es2024".into()]),
-            plugins: LintPlugins::ESLINT,
-            settings: OxlintSettings::default(),
-            globals: OxlintGlobals::default(),
-            path: None,
-        };
-
-        let overrides = from_json!([{
-            "files": ["*.tsx"],
-            "env": {
-                "es2024": false
-            },
+        let base_config =
+            LintConfig { env: OxlintEnv::from_iter(["es2024".into()]), ..Default::default() };
+        let overrides = ResolvedOxlintOverrides::new(vec![ResolvedOxlintOverride {
+            files: GlobSet::new(vec!["*.tsx"]),
+            env: Some(from_json!({ "es2024": false })),
+            plugins: None,
+            globals: None,
+            rules: ResolvedOxlintOverrideRules { builtin_rules: vec![], external_rules: vec![] },
         }]);
 
-        let store =
-            ConfigStore::new(Config::new(vec![], base_config, overrides), FxHashMap::default());
+        let store = ConfigStore::new(
+            Config::new(vec![], vec![], OxlintCategories::default(), base_config, overrides),
+            FxHashMap::default(),
+            ExternalPluginStore::default(),
+        );
         assert!(store.base.base.config.env.contains("es2024"));
 
         let app = store.resolve("App.tsx".as_ref()).config;
@@ -417,24 +676,22 @@ mod test {
 
     #[test]
     fn test_add_globals() {
-        let base_config = LintConfig {
-            env: OxlintEnv::default(),
-            plugins: LintPlugins::ESLINT,
-            settings: OxlintSettings::default(),
-            globals: OxlintGlobals::default(),
-            path: None,
-        };
+        let base_config =
+            LintConfig { plugins: BuiltinLintPlugins::ESLINT.into(), ..Default::default() };
 
-        let overrides = from_json!([{
-            "files": ["*.tsx"],
-            "globals": {
-                "React": "readonly",
-                "Secret": "writeable"
-            },
+        let overrides = ResolvedOxlintOverrides::new(vec![ResolvedOxlintOverride {
+            files: GlobSet::new(vec!["*.tsx"]),
+            env: None,
+            plugins: None,
+            globals: Some(from_json!({ "React": "readonly", "Secret": "writeable" })),
+            rules: ResolvedOxlintOverrideRules { builtin_rules: vec![], external_rules: vec![] },
         }]);
 
-        let store =
-            ConfigStore::new(Config::new(vec![], base_config, overrides), FxHashMap::default());
+        let store = ConfigStore::new(
+            Config::new(vec![], vec![], OxlintCategories::default(), base_config, overrides),
+            FxHashMap::default(),
+            ExternalPluginStore::default(),
+        );
         assert!(!store.base.base.config.globals.is_enabled("React"));
         assert!(!store.base.base.config.globals.is_enabled("Secret"));
 
@@ -446,31 +703,339 @@ mod test {
     #[test]
     fn test_replace_globals() {
         let base_config = LintConfig {
-            env: OxlintEnv::default(),
-            plugins: LintPlugins::ESLINT,
-            settings: OxlintSettings::default(),
+            plugins: BuiltinLintPlugins::ESLINT.into(),
             globals: from_json!({
                 "React": "readonly",
                 "Secret": "writeable"
             }),
-            path: None,
+            ..Default::default()
         };
 
-        let overrides = from_json!([{
-            "files": ["*.tsx"],
-            "globals": {
-                "React": "off",
-                "Secret": "off"
-            },
+        let overrides = ResolvedOxlintOverrides::new(vec![ResolvedOxlintOverride {
+            files: GlobSet::new(vec!["*.tsx"]),
+            env: None,
+            plugins: None,
+            globals: Some(from_json!({ "React": "off", "Secret": "off" })),
+            rules: ResolvedOxlintOverrideRules { builtin_rules: vec![], external_rules: vec![] },
         }]);
 
-        let store =
-            ConfigStore::new(Config::new(vec![], base_config, overrides), FxHashMap::default());
+        let store = ConfigStore::new(
+            Config::new(vec![], vec![], OxlintCategories::default(), base_config, overrides),
+            FxHashMap::default(),
+            ExternalPluginStore::default(),
+        );
         assert!(store.base.base.config.globals.is_enabled("React"));
         assert!(store.base.base.config.globals.is_enabled("Secret"));
 
         let app = store.resolve("App.tsx".as_ref()).config;
         assert!(!app.globals.is_enabled("React"));
         assert!(!app.globals.is_enabled("Secret"));
+    }
+
+    #[test]
+    fn test_override_rule_not_reset_by_later_override_with_different_plugins() {
+        // This test reproduces the issue from https://github.com/oxc-project/oxc/issues/12859
+        // When multiple overrides apply to a file and they have different plugins,
+        // the later override should not reset rules that were explicitly set in earlier overrides.
+
+        // Root config with react, typescript, unicorn plugins and restriction category
+        let base_config = LintConfig {
+            plugins: LintPlugins::new(
+                BuiltinLintPlugins::REACT
+                    | BuiltinLintPlugins::TYPESCRIPT
+                    | BuiltinLintPlugins::UNICORN,
+                FxHashSet::default(),
+            ),
+            env: OxlintEnv::default(),
+            settings: OxlintSettings::default(),
+            globals: OxlintGlobals::default(),
+            path: None,
+        };
+
+        // Set up categories to enable restriction rules
+        let mut categories = OxlintCategories::default();
+        categories.insert(RuleCategory::Restriction, AllowWarnDeny::Warn);
+
+        // Create overrides similar to the user's config
+        let overrides = ResolvedOxlintOverrides::new(vec![
+            // First override: typescript plugin for *.{ts,tsx,mts}
+            ResolvedOxlintOverride {
+                env: None,
+                files: GlobSet::new(vec!["*.{ts,tsx,mts}"]),
+                plugins: Some(LintPlugins::new(
+                    BuiltinLintPlugins::TYPESCRIPT,
+                    FxHashSet::default(),
+                )),
+                globals: None,
+                rules: ResolvedOxlintOverrideRules {
+                    builtin_rules: vec![],
+                    external_rules: vec![],
+                },
+            },
+            // Second override: react plugin for *.{ts,tsx} with jsx-filename-extension turned off
+            ResolvedOxlintOverride {
+                env: None,
+                files: GlobSet::new(vec!["*.{ts,tsx}"]),
+                plugins: Some(LintPlugins::new(BuiltinLintPlugins::REACT, FxHashSet::default())),
+                globals: None,
+                rules: ResolvedOxlintOverrideRules {
+                    builtin_rules: vec![(
+                        RuleEnum::ReactJsxFilenameExtension(ReactJsxFilenameExtension::default()),
+                        AllowWarnDeny::Allow,
+                    )],
+                    external_rules: vec![],
+                },
+            },
+            // Third override: unicorn plugin for *.{ts,tsx,mts}
+            ResolvedOxlintOverride {
+                env: None,
+                files: GlobSet::new(vec!["*.{ts,tsx,mts}"]),
+                plugins: Some(LintPlugins::new(BuiltinLintPlugins::UNICORN, FxHashSet::default())),
+                globals: None,
+                rules: ResolvedOxlintOverrideRules {
+                    builtin_rules: vec![],
+                    external_rules: vec![],
+                },
+            },
+        ]);
+
+        // Create base rules - jsx-filename-extension should be enabled by restriction category
+        let base_rules = vec![(
+            RuleEnum::ReactJsxFilenameExtension(ReactJsxFilenameExtension::default()),
+            AllowWarnDeny::Warn,
+        )];
+
+        let store = ConfigStore::new(
+            Config::new(base_rules, vec![], categories, base_config, overrides),
+            FxHashMap::default(),
+            ExternalPluginStore::default(),
+        );
+
+        // Resolve rules for a .tsx file
+        let rules_for_tsx = store.resolve("App.tsx".as_ref());
+
+        // The jsx-filename-extension rule should be disabled (Allow) because the second override
+        // explicitly set it to Allow, and the third override should not reset it
+        let jsx_filename_rule = rules_for_tsx
+            .rules
+            .iter()
+            .find(|(rule, _)| matches!(rule, RuleEnum::ReactJsxFilenameExtension(_)));
+
+        // This test should fail with the current implementation
+        // The bug causes the rule to be re-enabled (Warn) instead of staying disabled (Allow)
+        assert!(
+            jsx_filename_rule.is_none(),
+            "jsx-filename-extension should be disabled (not present in active rules)"
+        );
+    }
+
+    #[test]
+    fn test_categories_only_applied_to_new_plugins_not_in_root() {
+        // Test that categories are only applied to plugins that weren't in the root config
+
+        // Root config with only typescript plugin
+        let base_config = LintConfig {
+            plugins: LintPlugins::new(BuiltinLintPlugins::TYPESCRIPT, FxHashSet::default()),
+            env: OxlintEnv::default(),
+            settings: OxlintSettings::default(),
+            globals: OxlintGlobals::default(),
+            path: None,
+        };
+
+        // Set up categories
+        let mut categories = OxlintCategories::default();
+        categories.insert(RuleCategory::Restriction, AllowWarnDeny::Warn);
+
+        // Override adds react plugin (new plugin not in root)
+        let overrides = ResolvedOxlintOverrides::new(vec![ResolvedOxlintOverride {
+            env: None,
+            files: GlobSet::new(vec!["*.tsx"]),
+            plugins: Some(LintPlugins::new(BuiltinLintPlugins::REACT, FxHashSet::default())),
+            globals: None,
+            rules: ResolvedOxlintOverrideRules { builtin_rules: vec![], external_rules: vec![] },
+        }]);
+
+        let store = ConfigStore::new(
+            Config::new(vec![], vec![], categories, base_config, overrides),
+            FxHashMap::default(),
+            ExternalPluginStore::default(),
+        );
+
+        // For .tsx files, react rules should be enabled by categories since react wasn't in root
+        let rules_for_tsx = store.resolve("App.tsx".as_ref());
+
+        // Check that react rules are present (categories were applied to the new plugin)
+        let has_react_rules =
+            rules_for_tsx.rules.iter().any(|(rule, _)| rule.plugin_name() == "react");
+
+        assert!(has_react_rules, "React rules should be enabled by categories for new plugin");
+    }
+
+    #[test]
+    fn test_rule_config_override_replaces_properly() {
+        let base_rules = vec![(
+            RuleEnum::EslintNoUnusedVars(EslintNoUnusedVars::default()),
+            AllowWarnDeny::Deny,
+        )];
+        let override_rule =
+            EslintNoUnusedVars::from_configuration(Value::from_str(r#"["local"]"#).unwrap());
+        let overrides = ResolvedOxlintOverrides::new(vec![ResolvedOxlintOverride {
+            env: None,
+            files: GlobSet::new(vec!["*.tsx"]),
+            plugins: None,
+            globals: None,
+            rules: ResolvedOxlintOverrideRules {
+                builtin_rules: vec![(
+                    RuleEnum::EslintNoUnusedVars(override_rule),
+                    AllowWarnDeny::Deny,
+                )],
+                external_rules: vec![],
+            },
+        }]);
+
+        let store = ConfigStore::new(
+            Config::new(
+                base_rules.clone(),
+                vec![],
+                OxlintCategories::default(),
+                LintConfig::default(),
+                overrides,
+            ),
+            FxHashMap::default(),
+            ExternalPluginStore::default(),
+        );
+
+        assert!(
+            format!("{:?}", base_rules[0].0)
+                == format!(
+                    "{:?}",
+                    store
+                        .resolve("app.ts".as_ref())
+                        .rules
+                        .iter()
+                        .find(|(rule, _)| matches!(rule, RuleEnum::EslintNoUnusedVars(_)))
+                        .unwrap()
+                        .0
+                )
+        );
+        assert!(
+            format!("{:?}", base_rules[0].0)
+                != format!(
+                    "{:?}",
+                    store
+                        .resolve("app.tsx".as_ref())
+                        .rules
+                        .iter()
+                        .find(|(rule, _)| matches!(rule, RuleEnum::EslintNoUnusedVars(_)))
+                        .unwrap()
+                        .0
+                )
+        );
+    }
+
+    #[test]
+    fn test_categories_not_reapplied_to_root_plugins() {
+        // Test that categories are NOT re-applied to plugins that were already in root
+
+        // Root config with react plugin
+        let base_config = LintConfig {
+            plugins: LintPlugins::new(BuiltinLintPlugins::REACT, FxHashSet::default()),
+            env: OxlintEnv::default(),
+            settings: OxlintSettings::default(),
+            globals: OxlintGlobals::default(),
+            path: None,
+        };
+
+        // Set up categories
+        let mut categories = OxlintCategories::default();
+        categories.insert(RuleCategory::Restriction, AllowWarnDeny::Warn);
+
+        // Base rules with jsx-filename-extension disabled
+        let base_rules = vec![(
+            RuleEnum::ReactJsxFilenameExtension(ReactJsxFilenameExtension::default()),
+            AllowWarnDeny::Allow, // Disabled at root
+        )];
+
+        // Override adds typescript plugin
+        let overrides = ResolvedOxlintOverrides::new(vec![ResolvedOxlintOverride {
+            env: None,
+            files: GlobSet::new(vec!["*.tsx"]),
+            plugins: Some(LintPlugins::new(BuiltinLintPlugins::TYPESCRIPT, FxHashSet::default())),
+            globals: None,
+            rules: ResolvedOxlintOverrideRules { builtin_rules: vec![], external_rules: vec![] },
+        }]);
+
+        let store = ConfigStore::new(
+            Config::new(base_rules, vec![], categories, base_config, overrides),
+            FxHashMap::default(),
+            ExternalPluginStore::default(),
+        );
+
+        // For .tsx files, jsx-filename-extension should remain disabled
+        let rules_for_tsx = store.resolve("App.tsx".as_ref());
+
+        let jsx_filename_rule = rules_for_tsx
+            .rules
+            .iter()
+            .find(|(rule, _)| matches!(rule, RuleEnum::ReactJsxFilenameExtension(_)));
+
+        assert!(
+            jsx_filename_rule.is_none(),
+            "jsx-filename-extension should remain disabled (not re-enabled by categories)"
+        );
+    }
+
+    #[test]
+    fn test_number_of_rules() {
+        let base_config = LintConfig::default();
+
+        let base_rules = vec![
+            (RuleEnum::EslintCurly(EslintCurly::default()), AllowWarnDeny::Deny),
+            (
+                RuleEnum::TypescriptNoMisusedPromises(TypescriptNoMisusedPromises),
+                AllowWarnDeny::Deny,
+            ),
+        ];
+
+        let store = ConfigStore::new(
+            Config::new(
+                base_rules.clone(),
+                vec![],
+                OxlintCategories::default(),
+                base_config.clone(),
+                ResolvedOxlintOverrides::new(vec![]),
+            ),
+            FxHashMap::default(),
+            ExternalPluginStore::default(),
+        );
+
+        let mut nested_configs = FxHashMap::default();
+        nested_configs.insert(
+            PathBuf::new(),
+            Config::new(
+                vec![],
+                vec![],
+                OxlintCategories::default(),
+                base_config.clone(),
+                ResolvedOxlintOverrides::new(vec![]),
+            ),
+        );
+
+        let store_with_nested_configs = ConfigStore::new(
+            Config::new(
+                base_rules,
+                vec![],
+                OxlintCategories::default(),
+                base_config,
+                ResolvedOxlintOverrides::new(vec![]),
+            ),
+            nested_configs,
+            ExternalPluginStore::default(),
+        );
+
+        assert_eq!(store.number_of_rules(false), Some(1));
+        assert_eq!(store.number_of_rules(true), Some(2));
+        assert_eq!(store_with_nested_configs.number_of_rules(false), None);
+        assert_eq!(store_with_nested_configs.number_of_rules(true), None);
     }
 }

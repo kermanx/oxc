@@ -40,12 +40,12 @@ impl InternalFormatter for DefaultOutputFormatter {
         }
     }
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "force_test_reporter")))]
     fn get_diagnostic_reporter(&self) -> Box<dyn DiagnosticReporter> {
         Box::new(GraphicalReporter::default())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "force_test_reporter"))]
     fn get_diagnostic_reporter(&self) -> Box<dyn DiagnosticReporter> {
         use crate::output_formatter::default::test_implementation::GraphicalReporterTester;
 
@@ -63,6 +63,7 @@ impl DefaultOutputFormatter {
 /// Pretty-prints diagnostics. Primarily meant for human-readable output in a terminal.
 ///
 /// See [`GraphicalReportHandler`] for how to configure colors, context lines, etc.
+#[cfg_attr(all(not(test), feature = "force_test_reporter"), expect(dead_code))]
 struct GraphicalReporter {
     handler: GraphicalReportHandler,
 }
@@ -113,7 +114,7 @@ fn get_diagnostic_result_output(result: &DiagnosticResult) -> String {
     output
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "force_test_reporter"))]
 mod test_implementation {
     use oxc_diagnostics::{
         Error, GraphicalReportHandler, GraphicalTheme,
@@ -132,8 +133,10 @@ mod test_implementation {
             let handler = GraphicalReportHandler::new_themed(GraphicalTheme::none());
             let mut output = String::new();
 
-            self.diagnostics.sort_by_key(|diagnostic| Info::new(diagnostic).filename);
-            self.diagnostics.sort_by_key(|diagnostic| Info::new(diagnostic).start.line);
+            self.diagnostics.sort_by_cached_key(|diagnostic| {
+                let info = Info::new(diagnostic);
+                (info.filename, info.start, info.end, info.rule_id, info.message)
+            });
 
             for diagnostic in &self.diagnostics {
                 handler.render_report(&mut output, diagnostic.as_ref()).unwrap();

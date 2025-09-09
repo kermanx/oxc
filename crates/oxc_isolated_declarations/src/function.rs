@@ -21,7 +21,7 @@ impl<'a> IsolatedDeclarations<'a> {
         if return_type.is_none() {
             self.error(function_must_have_explicit_return_type(get_function_span(func)));
         }
-        let params = self.transform_formal_parameters(&func.params);
+        let params = self.transform_formal_parameters(&func.params, false);
         self.ast.alloc_function(
             func.span,
             func.r#type,
@@ -62,7 +62,10 @@ impl<'a> IsolatedDeclarations<'a> {
 
         FormalParameterBindingPattern::remove_assignments_from_kind(self.ast, &mut pattern.kind);
 
-        if is_assignment_pattern || pattern.type_annotation.is_none() {
+        if is_assignment_pattern
+            || pattern.type_annotation.is_none()
+            || (param.pattern.optional && param.has_modifier())
+        {
             let type_annotation = pattern
                 .type_annotation
                 .as_ref()
@@ -78,7 +81,9 @@ impl<'a> IsolatedDeclarations<'a> {
                 .map(|ts_type| {
                     // jf next param is not optional and current param is assignment pattern
                     // we need to add undefined to it's type
-                    if is_remaining_params_have_required {
+                    if is_remaining_params_have_required
+                        || (param.pattern.optional && param.has_modifier())
+                    {
                         if matches!(ts_type, TSType::TSTypeReference(_)) {
                             self.error(implicitly_adding_undefined_to_type(param.span));
                         } else if !ts_type.is_maybe_undefined() {
@@ -113,19 +118,26 @@ impl<'a> IsolatedDeclarations<'a> {
     pub(crate) fn transform_formal_parameters(
         &self,
         params: &FormalParameters<'a>,
+        skip_no_accessibility_param: bool,
     ) -> ArenaBox<'a, FormalParameters<'a>> {
         if params.kind.is_signature() || (params.rest.is_none() && params.items.is_empty()) {
             return self.ast.alloc(params.clone_in(self.ast.allocator));
         }
 
-        let items =
-            self.ast.vec_from_iter(params.items.iter().enumerate().filter_map(|(index, item)| {
-                let is_remaining_params_have_required =
-                    params.items.iter().skip(index).any(|item| {
-                        !(item.pattern.optional || item.pattern.kind.is_assignment_pattern())
-                    });
-                self.transform_formal_parameter(item, is_remaining_params_have_required)
-            }));
+        let items = self.ast.vec_from_iter(
+            params
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| !skip_no_accessibility_param || item.has_modifier())
+                .filter_map(|(index, item)| {
+                    let is_remaining_params_have_required =
+                        params.items.iter().skip(index).any(|item| {
+                            !(item.pattern.optional || item.pattern.kind.is_assignment_pattern())
+                        });
+                    self.transform_formal_parameter(item, is_remaining_params_have_required)
+                }),
+        );
 
         if let Some(rest) = &params.rest {
             if rest.argument.type_annotation.is_none() {
@@ -143,11 +155,5 @@ impl<'a> IsolatedDeclarations<'a> {
 }
 
 pub fn get_function_span(func: &Function<'_>) -> Span {
-    func.id.as_ref().map_or_else(
-        || {
-            let start = func.params.span.start;
-            Span::new(start, start)
-        },
-        |id| id.span,
-    )
+    func.id.as_ref().map_or_else(|| Span::empty(func.params.span.start), |id| id.span)
 }

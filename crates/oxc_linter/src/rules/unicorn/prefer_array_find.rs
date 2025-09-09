@@ -2,7 +2,7 @@ use oxc_ast::{
     AstKind,
     ast::{
         Argument, AssignmentTarget, BindingPatternKind, CallExpression, Expression,
-        MemberExpression, UnaryOperator,
+        SimpleAssignmentTarget, UnaryOperator,
     },
 };
 use oxc_diagnostics::OxcDiagnostic;
@@ -57,10 +57,7 @@ declare_oxc_lint!(
 impl Rule for PreferArrayFind {
     fn run<'a>(&self, node: &AstNode<'a>, ctx: &LintContext<'a>) {
         // Zero index access
-        if let AstKind::MemberExpression(MemberExpression::ComputedMemberExpression(
-            computed_member_expr,
-        )) = node.kind()
-        {
+        if let AstKind::ComputedMemberExpression(computed_member_expr) = node.kind() {
             if computed_member_expr.expression.is_number_0() {
                 if let Expression::CallExpression(call_expr) =
                     computed_member_expr.object.get_inner_expression()
@@ -76,8 +73,11 @@ impl Rule for PreferArrayFind {
 
         if let AstKind::CallExpression(call_expr) = node.kind() {
             if is_method_call(call_expr, None, Some(&["shift"]), Some(0), Some(0)) {
-                if let Expression::CallExpression(filter_call_expr) =
-                    call_expr.callee.as_member_expression().unwrap().object().get_inner_expression()
+                if let Some(Expression::CallExpression(filter_call_expr)) = call_expr
+                    .callee
+                    .get_inner_expression()
+                    .as_member_expression()
+                    .map(|expression| expression.object().get_inner_expression())
                 {
                     if is_filter_call(filter_call_expr) {
                         ctx.diagnostic(prefer_array_find_diagnostic(
@@ -127,7 +127,7 @@ impl Rule for PreferArrayFind {
             if let Some(Expression::CallExpression(call_expr)) = &var_decl.init {
                 if is_filter_call(call_expr)
                     && !matches!(
-                        ctx.nodes().ancestor_kinds(node.id()).nth(2),
+                        ctx.nodes().ancestor_kinds(node.id()).nth(1),
                         Some(
                             AstKind::ExportDefaultDeclaration(_)
                                 | AstKind::ExportNamedDeclaration(_)
@@ -142,12 +142,12 @@ impl Rule for PreferArrayFind {
 
                         for reference in ctx.symbol_references(ident.symbol_id()) {
                             match ctx.nodes().parent_kind(reference.node_id()) {
-                                Some(AstKind::MemberExpression(
-                                    MemberExpression::ComputedMemberExpression(c),
-                                )) if c.expression.is_number_0() => {
+                                AstKind::ComputedMemberExpression(c)
+                                    if c.expression.is_number_0() =>
+                                {
                                     zero_index_nodes.push(reference);
                                 }
-                                Some(AstKind::VariableDeclarator(var_declarator)) => {
+                                AstKind::VariableDeclarator(var_declarator) => {
                                     if let BindingPatternKind::ArrayPattern(array_pat) =
                                         &var_declarator.id.kind
                                     {
@@ -158,7 +158,8 @@ impl Rule for PreferArrayFind {
                                         }
                                     }
                                 }
-                                Some(AstKind::AssignmentExpression(assignment_expr)) => {
+                                AstKind::AssignmentExpression(assignment_expr) => {
+                                    // Check for array destructuring: [foo] = items
                                     if let AssignmentTarget::ArrayAssignmentTarget(target) =
                                         &assignment_expr.left
                                     {
@@ -166,6 +167,16 @@ impl Rule for PreferArrayFind {
                                             && target.elements[0].is_some()
                                         {
                                             destructuring_nodes.push(reference);
+                                        }
+                                    } else if let Some(
+                                        SimpleAssignmentTarget::AssignmentTargetIdentifier(ident),
+                                    ) = assignment_expr.left.as_simple_assignment_target()
+                                    {
+                                        // Check for simple reassignment: items = something
+                                        if ident.span
+                                            == ctx.nodes().get_node(reference.node_id()).span()
+                                        {
+                                            is_used_elsewhere = true; // Variable is being reassigned
                                         }
                                     }
                                 }
@@ -201,12 +212,11 @@ impl Rule for PreferArrayFind {
                     })
                 })
             {
-                if let Expression::CallExpression(filter_call_expr) = at_call_expr
+                if let Some(Expression::CallExpression(filter_call_expr)) = at_call_expr
                     .callee
-                    .as_member_expression()
-                    .unwrap()
-                    .object()
                     .get_inner_expression()
+                    .as_member_expression()
+                    .map(|expression| expression.object().get_inner_expression())
                 {
                     if is_filter_call(filter_call_expr) {
                         ctx.diagnostic(prefer_array_find_diagnostic(
@@ -220,12 +230,11 @@ impl Rule for PreferArrayFind {
         // `array.filter().pop()`
         if let AstKind::CallExpression(pop_call_expr) = node.kind() {
             if is_method_call(pop_call_expr, None, Some(&["pop"]), Some(0), Some(0)) {
-                if let Expression::CallExpression(filter_call_expr) = pop_call_expr
+                if let Some(Expression::CallExpression(filter_call_expr)) = pop_call_expr
                     .callee
-                    .as_member_expression()
-                    .unwrap()
-                    .object()
                     .get_inner_expression()
+                    .as_member_expression()
+                    .map(|expression| expression.object().get_inner_expression())
                 {
                     if is_filter_call(filter_call_expr) {
                         ctx.diagnostic(prefer_array_find_diagnostic(
@@ -244,23 +253,18 @@ fn is_filter_call(call_expr: &CallExpression) -> bool {
 }
 
 fn is_left_hand_side<'a>(node: &AstNode<'a>, ctx: &LintContext<'a>) -> bool {
-    if let Some(parent) = ctx.nodes().parent_node(node.id()) {
-        match parent.kind() {
-            AstKind::ArrayPattern(_) | AstKind::SimpleAssignmentTarget(_) => return true,
-            AstKind::AssignmentExpression(expr) => {
-                return expr.left.span() == node.span();
-            }
-            AstKind::AssignmentPattern(expr) => return expr.left.span() == node.span(),
-            AstKind::UpdateExpression(expr) => return expr.argument.span() == node.span(),
-            AstKind::UnaryExpression(expr) if expr.operator == UnaryOperator::Delete => {
-                return true;
-            }
-
-            _ => return false,
-        }
+    match ctx.nodes().parent_kind(node.id()) {
+        AstKind::AssignmentExpression(expr) => expr.left.span() == node.span(),
+        AstKind::AssignmentPattern(expr) => expr.left.span() == node.span(),
+        AstKind::UpdateExpression(expr) => expr.argument.span() == node.span(),
+        AstKind::UnaryExpression(expr) => expr.operator == UnaryOperator::Delete,
+        AstKind::ArrayAssignmentTarget(_)
+        | AstKind::ObjectAssignmentTarget(_)
+        | AstKind::AssignmentTargetWithDefault(_)
+        | AstKind::ArrayPattern(_)
+        | AstKind::IdentifierReference(_) => true,
+        _ => false,
     }
-
-    false
 }
 
 #[test]
@@ -440,6 +444,8 @@ fn test() {
         "array.filter().at(0)",
         "array.filter(foo, thisArgument, extraArgument).at(0)",
         "array.filter(...foo).at(0)",
+        // oxc-project/oxc#12399
+        "{a.pop!()}",
     ];
 
     let fail = vec![
@@ -622,6 +628,9 @@ fn test() {
 				)
 				// comment 6
 				;",
+        // oxc-project/oxc#12399
+        "array.filter(foo).pop!()",
+        "array.filter(foo)?.pop()",
     ];
 
     let _fix: Vec<(&'static str, &'static str, Option<serde_json::Value>)> = vec![

@@ -5,41 +5,75 @@ use crate::{
     formatter::{
         Buffer, Format, FormatResult, Formatter,
         prelude::{format_with, group, soft_block_indent_with_maybe_space},
+        trivia::format_dangling_comments,
     },
+    generated::ast_nodes::{AstNode, AstNodes},
     options::Expand,
     write,
 };
 
 #[derive(Clone, Copy)]
 pub enum ObjectLike<'a, 'b> {
-    ObjectExpression(&'b ObjectExpression<'a>),
-    TSTypeLiteral(&'b TSTypeLiteral<'a>),
+    ObjectExpression(&'b AstNode<'a, ObjectExpression<'a>>),
+    TSTypeLiteral(&'b AstNode<'a, TSTypeLiteral<'a>>),
 }
 
 impl<'a> ObjectLike<'a, '_> {
+    fn span(&self) -> Span {
+        match self {
+            ObjectLike::ObjectExpression(o) => o.span,
+            ObjectLike::TSTypeLiteral(o) => o.span,
+        }
+    }
+
+    fn should_hug(&self) -> bool {
+        // Check if the object type is the type annotation of the only parameter in a function.
+        // This prevents breaking object properties in cases like:
+        // const fn = ({ foo }: { foo: string }) => { ... };
+        match self {
+            Self::TSTypeLiteral(node) => {
+                // Check if parent is TSTypeAnnotation
+                matches!(node.parent, AstNodes::TSTypeAnnotation(type_ann) if {
+                    // Check if that parent is FormalParameter
+                    matches!(type_ann.parent, AstNodes::FormalParameter(param) if {
+                        // Check if that parent is FormalParameters with only one item
+                        matches!(param.parent, AstNodes::FormalParameters(params) if {
+                            params.items.len() == 1
+                        })
+                    })
+                })
+            }
+            Self::ObjectExpression(node) => false,
+        }
+    }
+
     fn members_have_leading_newline(&self, f: &Formatter<'_, 'a>) -> bool {
         // TODO: Polish the code
         match self {
-            Self::ObjectExpression(o) => o.properties.first().is_some_and(|p| {
-                Span::new(o.span.start, p.span().start).source_text(f.source_text()).contains('\n')
+            Self::ObjectExpression(o) => o.as_ref().properties.first().is_some_and(|p| {
+                Span::new(o.span().start, p.span().start)
+                    .source_text(f.source_text())
+                    .contains('\n')
             }),
-            Self::TSTypeLiteral(o) => o.members.first().is_some_and(|p| {
-                Span::new(o.span.start, p.span().start).source_text(f.source_text()).contains('\n')
+            Self::TSTypeLiteral(o) => o.as_ref().members.first().is_some_and(|p| {
+                Span::new(o.span().start, p.span().start)
+                    .source_text(f.source_text())
+                    .contains('\n')
             }),
         }
     }
 
     fn members_are_empty(&self) -> bool {
         match self {
-            Self::ObjectExpression(o) => o.properties.is_empty(),
-            Self::TSTypeLiteral(o) => o.members.is_empty(),
+            Self::ObjectExpression(o) => o.properties().is_empty(),
+            Self::TSTypeLiteral(o) => o.members().is_empty(),
         }
     }
 
     fn write_members(&self, f: &mut Formatter<'_, 'a>) -> FormatResult<()> {
         match self {
-            Self::ObjectExpression(o) => o.properties.fmt(f),
-            Self::TSTypeLiteral(o) => o.members.fmt(f),
+            Self::ObjectExpression(o) => o.properties().fmt(f),
+            Self::TSTypeLiteral(o) => o.members().fmt(f),
         }
     }
 }
@@ -51,8 +85,7 @@ impl<'a> Format<'a> for ObjectLike<'a, '_> {
         write!(f, "{")?;
 
         if self.members_are_empty() {
-            // TODO
-            // write!(f, [format_dangling_comments(self.syntax()).with_block_indent(),])?;
+            write!(f, format_dangling_comments(self.span()).with_block_indent())?;
         } else {
             let should_insert_space_around_brackets = f.options().bracket_spacing.value();
             let should_expand = (f.options().expand == Expand::Auto
@@ -67,13 +100,7 @@ impl<'a> Format<'a> for ObjectLike<'a, '_> {
             // const fn = ({ foo }: { foo: string }) => { ... };
             //                      ^ do not break properties here
             // ```
-            // TODO
-            // let should_hug = self.parent::<TsTypeAnnotation>().is_some_and(|node| {
-            // node.parent::<JsFormalParameter>().is_some_and(|node| {
-            // node.parent::<JsParameterList>().is_some_and(|node| node.len() == 1)
-            // })
-            // });
-            let should_hug = false;
+            let should_hug = self.should_hug();
 
             let inner =
                 soft_block_indent_with_maybe_space(&members, should_insert_space_around_brackets);

@@ -1,5 +1,7 @@
 //! Test cases created by oxc maintainers
 
+use std::path::PathBuf;
+
 use serde_json::json;
 
 use super::NoUnusedVars;
@@ -204,6 +206,24 @@ fn test_vars_self_use() {
 }
 
 #[test]
+fn test_vars_self_use_js() {
+    let pass = vec![
+        // https://github.com/oxc-project/oxc/issues/11215
+        "export function promisify() { var fn; function fn() {} return fn; }",
+    ];
+
+    let fail = vec![
+        // https://github.com/oxc-project/oxc/issues/11215
+        "export function promisify() { var fn; function fn() { fn() } }",
+    ];
+
+    Tester::new(NoUnusedVars::NAME, NoUnusedVars::PLUGIN, pass, fail)
+        .change_rule_path_extension("js")
+        .intentionally_allow_no_fix_tests()
+        .test();
+}
+
+#[test]
 fn test_vars_discarded_reads() {
     let pass = vec![
         // https://github.com/oxc-project/oxc/pull/4445#issuecomment-2254122889
@@ -257,6 +277,13 @@ fn test_vars_discarded_reads() {
                 return (yield fn(), 1);
             }
         }",
+        // https://github.com/oxc-project/oxc/issues/12592
+        "export const Foo = ({ onDismiss }) => {
+            const { remove } = useToaster();
+            return (
+                <button onClick={() => (onDismiss?.(), remove())}>x</button>
+            );
+        };",
     ];
 
     let fail = vec![
@@ -1031,6 +1058,11 @@ fn test_classes() {
         }
         new Bar();
         ",
+        // Variables used in class property initializers should not be marked as unused
+        "let a = 0; class A { c = a++ } new A()",
+        "let a = 0; class A { c = a } new A()",
+        "let a = 0; class A { c = a + 1 } new A()",
+        "let a = 0, b = 1; class A { c = a; d = b++ } new A()",
     ];
 
     let fail = vec![
@@ -1288,6 +1320,43 @@ fn test_report_vars_only_used_as_types() {
     ];
 
     Tester::new(NoUnusedVars::NAME, NoUnusedVars::PLUGIN, pass, fail)
+        .intentionally_allow_no_fix_tests()
+        .test();
+}
+
+#[test]
+fn test_should_run() {
+    let pass = vec![
+        (
+            r#"<script setup lang="ts"> import * as vue from 'vue' </script>"#,
+            None,
+            None,
+            Some(PathBuf::from("src/foo/bar.vue")),
+        ),
+        (
+            r"---
+import Welcome from '../components/Welcome.astro';
+import Layout from '../layouts/Layout.astro';
+---
+<Layout>
+	<Welcome />
+</Layout>",
+            None,
+            None,
+            Some(PathBuf::from("src/foo/bar.astro")),
+        ),
+        (
+            r"<script>
+	            import Nested from './Nested.svelte';
+            </script>
+            <Nested answer={42} />",
+            None,
+            None,
+            Some(PathBuf::from("src/foo/bar.svelte")),
+        ),
+    ];
+
+    Tester::new(NoUnusedVars::NAME, NoUnusedVars::PLUGIN, pass, vec![])
         .intentionally_allow_no_fix_tests()
         .test();
 }

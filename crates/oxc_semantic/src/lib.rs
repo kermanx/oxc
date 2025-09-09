@@ -22,6 +22,7 @@ pub use oxc_syntax::{
 
 pub mod dot;
 
+mod ast_types_bitset;
 mod binder;
 mod builder;
 mod checker;
@@ -35,6 +36,7 @@ mod scoping;
 mod stats;
 mod unresolved_stack;
 
+pub use ast_types_bitset::AstTypesBitset;
 pub use builder::{SemanticBuilder, SemanticBuilderReturn};
 pub use is_global_reference::IsGlobalReference;
 pub use jsdoc::{JSDoc, JSDocFinder, JSDocTag};
@@ -54,6 +56,7 @@ use class::ClassTable;
 /// [`Abstract Syntax Tree (AST)`]: crate::AstNodes
 /// [`scoping`]: crate::Scoping
 /// [`control flow graph (CFG)`]: crate::ControlFlowGraph
+#[derive(Default)]
 pub struct Semantic<'a> {
     /// Source code of the JavaScript/TypeScript program being analyzed.
     source_text: &'a str,
@@ -69,7 +72,7 @@ pub struct Semantic<'a> {
     classes: ClassTable<'a>,
 
     /// Parsed comments.
-    comments: &'a oxc_allocator::Vec<'a, Comment>,
+    comments: &'a [Comment],
     irregular_whitespaces: Box<[Span]>,
 
     /// Parsed JSDoc comments.
@@ -120,7 +123,7 @@ impl<'a> Semantic<'a> {
         (&mut self.scoping, &self.nodes)
     }
 
-    pub fn classes(&self) -> &ClassTable {
+    pub fn classes(&self) -> &ClassTable<'_> {
         &self.classes
     }
 

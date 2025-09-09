@@ -2,11 +2,12 @@
 source: tasks/website/src/linter/cli.rs
 expression: snapshot
 ---
-Usage: [-c=<./oxlintrc.json>] [PATH]...
+Usage: [-c=<./.oxlintrc.json>] [PATH]...
 
 Basic Configuration
-    -c, --config=<./oxlintrc.json>  Oxlint configuration file (experimental)
+    -c, --config=<./.oxlintrc.json>  Oxlint configuration file (experimental)
                               * only `.json` extension is supported
+                              * you can use comments in configuration files.
                               * tries to be compatible with the ESLint v8's format
         --tsconfig=<./tsconfig.json>  TypeScript `tsconfig.json` path for reading path alias and
                               project references for import plugin
@@ -29,12 +30,12 @@ Allowing / Denying Multiple Lints
     -D, --deny=NAME           Deny the rule or category (emit an error)
 
 Enable Plugins
-        --disable-react-plugin  Disable react plugin, which is turned on by default
         --disable-unicorn-plugin  Disable unicorn plugin, which is turned on by default
         --disable-oxc-plugin  Disable oxc unique rules, which is turned on by default
         --disable-typescript-plugin  Disable TypeScript plugin, which is turned on by default
         --import-plugin       Enable the experimental import plugin and detect ESM problems. It is
                               recommended to use along side with the `--tsconfig` option.
+        --react-plugin        Enable react plugin, which is turned off by default
         --jsdoc-plugin        Enable the experimental jsdoc plugin and detect JSDoc problems
         --jest-plugin         Enable the Jest plugin and detect test problems
         --vitest-plugin       Enable the Vitest plugin and detect test problems
@@ -44,6 +45,8 @@ Enable Plugins
                               problems
         --promise-plugin      Enable the promise plugin and detect promise usage problems
         --node-plugin         Enable the node plugin and detect node usage problems
+        --regex-plugin        Enable the regex plugin and detect regex usage problems
+        --vue-plugin          Enable the vue plugin and detect vue usage problems
 
 Fix Problems
         --fix                 Fix as many issues as possible. Only unfixed issues are reported in
@@ -57,7 +60,6 @@ Ignore Files
                               .eslintignore)
         --no-ignore           Disables excluding of files from .eslintignore files, --ignore-path
                               flags and --ignore-pattern flags
-        --symlinks            Follow symbolic links. Oxlint ignores symbolic links by default.
 
 Handle Warnings
         --quiet               Disable reporting on warnings, only errors are reported
@@ -90,5 +92,6 @@ Available positional items:
 Available options:
         --rules               list all the rules that are currently registered
         --disable-nested-config  Disables the automatic loading of nested configuration files.
+        --type-aware          Enables rules that require type information.
     -h, --help                Prints help information
     -V, --version             Prints version information

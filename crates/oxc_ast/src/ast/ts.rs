@@ -1,9 +1,17 @@
 //! TypeScript Definitions
 //!
+//! This module contains AST node definitions for TypeScript syntax including:
+//! - Type annotations and declarations
+//! - Interfaces and type aliases
+//! - Enums and namespaces
+//! - TypeScript-specific expressions
+//! - Import/export extensions
+//!
+//! ## References
 //! - [AST Spec](https://github.com/typescript-eslint/typescript-eslint/tree/v8.9.0/packages/ast-spec)
 //! - [Archived TypeScript spec](https://github.com/microsoft/TypeScript/blob/3c99d50da5a579d9fa92d02664b1b66d4ff55944/doc/spec-ARCHIVED.md)
 #![expect(
-    missing_docs, // FIXME
+    missing_docs, // TODO: document individual struct fields  
     clippy::enum_variant_names,
 )]
 
@@ -37,7 +45,7 @@ use super::{inherit_variants, js::*, literal::*};
 #[estree(
     rename = "Identifier",
     add_fields(name = This, decorators = EmptyArray, optional = False),
-    field_order(span, name, decorators, optional, type_annotation),
+    field_order(decorators, name, optional, type_annotation, span),
 )]
 pub struct TSThisParameter<'a> {
     pub span: Span,
@@ -122,10 +130,7 @@ pub struct TSEnumBody<'a> {
 #[ast(visit)]
 #[derive(Debug)]
 #[generate_derive(CloneIn, Dummy, TakeIn, GetSpan, GetSpanMut, ContentEq, ESTree)]
-#[estree(
-    add_fields(computed = TSEnumMemberComputed),
-    field_order(span, id, computed, initializer),
-)]
+#[estree(add_fields(computed = TSEnumMemberComputed))]
 pub struct TSEnumMember<'a> {
     pub span: Span,
     pub id: TSEnumMemberName<'a>,
@@ -215,7 +220,7 @@ pub enum TSLiteral<'a> {
 
 /// TypeScript Type
 ///
-/// This is the root-level type for TypeScript types, kind of like [`Expression`] is for
+/// This is the root-level type for TypeScript types, similar to how [`Expression`] is for
 /// expressions.
 ///
 /// ## Examples
@@ -754,9 +759,12 @@ pub struct TSBigIntKeyword {
 ///
 /// ## Example
 /// ```ts
-/// type C = A;
-/// type D = B.a;
-/// type E = D.c.b.a;
+/// type A = X;
+/// //       ^
+/// type B = Y.a;
+/// //       ^^^
+/// type C<T> = Z.b<T>;
+/// //          ^^^^^^
 /// ```
 #[ast(visit)]
 #[derive(Debug)]
@@ -767,23 +775,24 @@ pub struct TSTypeReference<'a> {
     pub type_arguments: Option<Box<'a, TSTypeParameterInstantiation<'a>>>,
 }
 
-/// TypeName:
+/// TSTypeName:
 ///     IdentifierReference
-///     NamespaceName . IdentifierReference
+///     this
+///     TSTypeName . IdentifierName
 #[ast(visit)]
 #[derive(Debug)]
 #[generate_derive(CloneIn, Dummy, TakeIn, GetSpan, GetSpanMut, GetAddress, ContentEq, ESTree)]
 pub enum TSTypeName<'a> {
-    #[estree(via = TSTypeNameIdentifierReference)]
     IdentifierReference(Box<'a, IdentifierReference<'a>>) = 0,
     QualifiedName(Box<'a, TSQualifiedName<'a>>) = 1,
+    ThisExpression(Box<'a, ThisExpression>) = 2,
 }
 
 /// Macro for matching `TSTypeName`'s variants.
 #[macro_export]
 macro_rules! match_ts_type_name {
     ($ty:ident) => {
-        $ty::IdentifierReference(_) | $ty::QualifiedName(_)
+        $ty::IdentifierReference(_) | $ty::QualifiedName(_) | $ty::ThisExpression(_)
     };
 }
 pub use match_ts_type_name;
@@ -795,6 +804,7 @@ pub use match_ts_type_name;
 /// ## Example
 /// ```ts
 /// type Foo = A.B.C;
+/// //         ^^^^^
 /// ```
 #[ast(visit)]
 #[derive(Debug)]
@@ -964,8 +974,8 @@ pub struct TSInterfaceBody<'a> {
 /// //  ___ key
 ///     bar: number
 /// //     ^^^^^^^^ type_annotation
-///     baz?: string          // <- optional
-///     readony bang: boolean // <- readonly
+///     baz?: string           // <- optional
+///     readonly bang: boolean // <- readonly
 /// }
 /// ```
 #[ast(visit)]
@@ -1087,7 +1097,7 @@ pub struct TSConstructSignatureDeclaration<'a> {
 #[estree(
     rename = "Identifier",
     add_fields(decorators = EmptyArray, optional = False),
-    field_order(span, name, decorators, optional, type_annotation),
+    field_order(decorators, name, optional, type_annotation, span),
 )]
 pub struct TSIndexSignatureName<'a> {
     pub span: Span,
@@ -1334,7 +1344,7 @@ inherit_variants! {
 #[generate_derive(CloneIn, Dummy, TakeIn, GetSpan, GetSpanMut, GetAddress, ContentEq, ESTree)]
 pub enum TSTypeQueryExprName<'a> {
     /// `type foo = typeof import('foo')`
-    TSImportType(Box<'a, TSImportType<'a>>) = 2,
+    TSImportType(Box<'a, TSImportType<'a>>) = 3,
     // `TSTypeName` variants added here by `inherit_variants!` macro
     @inherit TSTypeName
 }
@@ -1357,8 +1367,37 @@ pub struct TSImportType<'a> {
     pub span: Span,
     pub argument: TSType<'a>,
     pub options: Option<Box<'a, ObjectExpression<'a>>>,
-    pub qualifier: Option<TSTypeName<'a>>,
+    pub qualifier: Option<TSImportTypeQualifier<'a>>,
     pub type_arguments: Option<Box<'a, TSTypeParameterInstantiation<'a>>>,
+}
+
+/// TypeScript Import Type Qualifier
+///
+/// The qualifier part of an import type that doesn't create references.
+/// In `import("./a").b.c`, the `.b.c` part is the qualifier.
+///
+/// Unlike `TSTypeName`, this doesn't use `IdentifierReference` because
+/// these are not references to identifiers in scope, but rather property
+/// accesses on the imported module type.
+#[ast(visit)]
+#[derive(Debug)]
+#[generate_derive(CloneIn, Dummy, TakeIn, GetSpan, GetSpanMut, GetAddress, ContentEq, ESTree)]
+pub enum TSImportTypeQualifier<'a> {
+    Identifier(Box<'a, IdentifierName<'a>>) = 0,
+    QualifiedName(Box<'a, TSImportTypeQualifiedName<'a>>) = 1,
+}
+
+/// TypeScript Import Type Qualified Name
+///
+/// A qualified name in an import type (e.g., `a.b.c` in `import("./module").a.b.c`)
+#[ast(visit)]
+#[derive(Debug)]
+#[generate_derive(CloneIn, Dummy, TakeIn, GetSpan, GetSpanMut, ContentEq, ESTree)]
+#[estree(rename = "TSQualifiedName")]
+pub struct TSImportTypeQualifiedName<'a> {
+    pub span: Span,
+    pub left: TSImportTypeQualifier<'a>,
+    pub right: IdentifierName<'a>,
 }
 
 /// TypeScript Function Type
@@ -1439,7 +1478,10 @@ pub struct TSConstructorType<'a> {
 #[scope]
 #[derive(Debug)]
 #[generate_derive(CloneIn, Dummy, TakeIn, GetSpan, GetSpanMut, ContentEq, ESTree)]
-#[estree(add_fields(key = TSMappedTypeKey, constraint = TSMappedTypeConstraint))]
+#[estree(
+    add_fields(key = TSMappedTypeKey, constraint = TSMappedTypeConstraint),
+    field_order(key, constraint, name_type, type_annotation, optional, readonly, span),
+)]
 pub struct TSMappedType<'a> {
     pub span: Span,
     /// Key type parameter, e.g. `P` in `[P in keyof T]`.
@@ -1581,7 +1623,7 @@ inherit_variants! {
 #[derive(Debug)]
 #[generate_derive(CloneIn, Dummy, TakeIn, GetSpan, GetSpanMut, GetAddress, ContentEq, ESTree)]
 pub enum TSModuleReference<'a> {
-    ExternalModuleReference(Box<'a, TSExternalModuleReference<'a>>) = 2,
+    ExternalModuleReference(Box<'a, TSExternalModuleReference<'a>>) = 3,
     // `TSTypeName` variants added here by `inherit_variants!` macro
     @inherit TSTypeName
 }

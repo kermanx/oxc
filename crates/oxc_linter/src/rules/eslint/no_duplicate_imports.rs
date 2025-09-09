@@ -10,21 +10,29 @@ use crate::{
     rule::Rule,
 };
 
-fn no_duplicate_imports_diagnostic(module_name: &str, span: Span, span2: Span) -> OxcDiagnostic {
+fn no_duplicate_imports_diagnostic(
+    module_name: &str,
+    span: Span,
+    previous_span: Span,
+) -> OxcDiagnostic {
     OxcDiagnostic::warn(format!("'{module_name}' import is duplicated"))
         .with_help("Merge the duplicated import into a single import statement")
         .with_labels([
             span.label("This import is duplicated"),
-            span2.label("Can be merged with this import"),
+            previous_span.label("Can be merged with this import"),
         ])
 }
 
-fn no_duplicate_exports_diagnostic(module_name: &str, span: Span, span2: Span) -> OxcDiagnostic {
+fn no_duplicate_exports_diagnostic(
+    module_name: &str,
+    span: Span,
+    previous_span: Span,
+) -> OxcDiagnostic {
     OxcDiagnostic::warn(format!("'{module_name}' export is duplicated"))
         .with_help("Merge the duplicated exports into a single export statement")
         .with_labels([
             span.label("This export is duplicated"),
-            span2.label("Can be merged with this"),
+            previous_span.label("Can be merged with this"),
         ])
 }
 
@@ -65,21 +73,21 @@ declare_oxc_lint!(
     ///
     /// #### includeExports
     ///
-    /// `{ "includeExports": boolean }`
+    /// `{ type: boolean, default: false }`
     ///
     /// When `true` this rule will also look at exports to see if there is both a re-export of a
     /// module as in `export ... from 'module'` and also a standard import statement for the same
     /// module. This would count as a rule violation because there are in a sense two statements
     /// importing from the same module.
     ///
-    /// Examples of **incorrect** when this rule is set to `true`
+    /// Examples of **incorrect** code when `includeExports` is set to `true`:
     /// ```js
     /// import { merge } from 'module';
     ///
     /// export { find } from 'module'; // re-export which is an import and an export.
     /// ```
     ///
-    /// Examples of **correct** when this rule is set to `true`
+    /// Examples of **correct** code when `includeExports` is set to `true`:
     ///
     /// If re-exporting from an imported module, you should add the imports to the
     /// `import` statement, and export that directly, not use `export ... from`.
@@ -100,7 +108,8 @@ declare_oxc_lint!(
     NoDuplicateImports,
     eslint,
     style,
-    pending);
+    pending
+);
 
 #[derive(Debug, Clone, PartialEq)]
 enum ImportType {
@@ -119,10 +128,10 @@ enum ModuleType {
 
 impl Rule for NoDuplicateImports {
     fn from_configuration(value: serde_json::Value) -> Self {
-        let Some(value) = value.get(0) else { return Self { include_exports: false } };
+        let value = value.get(0);
         Self {
             include_exports: value
-                .get("includeExports")
+                .and_then(|v| v.get("includeExports"))
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false),
         }
@@ -132,19 +141,12 @@ impl Rule for NoDuplicateImports {
         let module_record = ctx.module_record();
         let mut import_map: FxHashMap<&CompactStr, Vec<(ImportType, Span, ModuleType)>> =
             FxHashMap::default();
-        let mut current_span: Option<Span> = None;
+        let mut previous_span: Option<Span> = None;
         let mut side_effect_import_map: FxHashMap<&CompactStr, Vec<Span>> = FxHashMap::default();
 
         for entry in &module_record.import_entries {
             let source = &entry.module_request.name;
-            let span = entry.module_request.span();
-
-            let same_statement = if let Some(curr_span) = current_span {
-                curr_span == span
-            } else {
-                current_span = Some(span);
-                true
-            };
+            let span = entry.module_request.span;
 
             let import_type = match &entry.import_name {
                 ImportImportName::Name(_) => ImportType::Named,
@@ -152,42 +154,41 @@ impl Rule for NoDuplicateImports {
                 ImportImportName::Default(_) => ImportType::Default,
             };
 
-            if let Some(existing) = import_map.get(source) {
-                let can_merge = can_merge_imports(&import_type, existing, same_statement);
-                if can_merge {
-                    ctx.diagnostic(no_duplicate_imports_diagnostic(
-                        source,
-                        span,
-                        existing.first().unwrap().1,
-                    ));
-                    continue;
+            if previous_span != Some(span) {
+                previous_span = Some(span);
+
+                if let Some(existing) = import_map.get(source) {
+                    if can_merge_imports(&import_type, existing) {
+                        ctx.diagnostic(no_duplicate_imports_diagnostic(
+                            source,
+                            span,
+                            existing.first().unwrap().1,
+                        ));
+                        continue;
+                    }
                 }
             }
 
             import_map.entry(source).or_default().push((import_type, span, ModuleType::Import));
-
-            if !same_statement {
-                current_span = Some(span);
-            }
         }
 
-        for (source, requests) in &module_record.requested_modules {
-            for request in requests {
-                if request.is_import && module_record.import_entries.is_empty() {
-                    side_effect_import_map.entry(source).or_default().push(request.span);
+        if module_record.import_entries.is_empty() {
+            for (source, requests) in &module_record.requested_modules {
+                for request in requests {
+                    if request.is_import {
+                        side_effect_import_map.entry(source).or_default().push(request.span);
+                    }
                 }
             }
-        }
 
-        for (source, spans) in &side_effect_import_map {
-            if spans.len() > 1 {
-                for span in spans {
-                    let i = spans.iter().position(|s| s == span).unwrap();
-                    if i > 0 {
+            for (source, spans) in &side_effect_import_map {
+                let mut spans_iter = spans.iter();
+                if let Some(first_span) = spans_iter.next() {
+                    for following_span in spans_iter {
                         ctx.diagnostic(no_duplicate_imports_diagnostic(
                             source,
-                            *span,
-                            *spans.first().unwrap(),
+                            *following_span,
+                            *first_span,
                         ));
                     }
                 }
@@ -266,13 +267,16 @@ impl Rule for NoDuplicateImports {
                                 span,
                                 existing.first().unwrap().1,
                             ));
-                            continue;
                         }
 
                         continue;
                     }
 
-                    if existing.iter().any(|(t, _, module_type)| {
+                    if existing.iter().any(|(t, import_span, module_type)| {
+                        // import { a } from 'foo'; export { a as t };
+                        if matches!(t, ImportType::Named) && module_request.span != *import_span {
+                            return true;
+                        }
                         (matches!(
                             t,
                             ImportType::Named | ImportType::SideEffect | ImportType::Default
@@ -302,10 +306,13 @@ impl Rule for NoDuplicateImports {
 fn can_merge_imports(
     current_type: &ImportType,
     existing: &[(ImportType, Span, ModuleType)],
-    same_statement: bool,
 ) -> bool {
-    if same_statement {
+    if *current_type == ImportType::AllButDefault {
         return false;
+    }
+
+    if *current_type == ImportType::SideEffect {
+        return !existing.is_empty();
     }
 
     let namespace = existing.iter().find(|(t, _, _)| matches!(t, ImportType::Namespace));
@@ -316,46 +323,30 @@ fn can_merge_imports(
     let has_named = named.is_some();
     let has_default = default.is_some();
 
-    if matches!(current_type, ImportType::Named) && has_named {
-        return true;
-    }
-
-    if matches!(current_type, ImportType::Namespace) {
-        if has_named && has_default {
-            if let Some((_, named_span, _)) = named {
-                if let Some((_, default_span, _)) = default {
-                    if named_span == default_span {
-                        return false;
+    match current_type {
+        ImportType::Named => {
+            has_named
+                || (has_default
+                    && !namespace.is_some_and(|(_, namespace_span, _)| {
+                        default.unwrap().1 == *namespace_span
+                    }))
+        }
+        ImportType::Namespace => {
+            if has_named && has_default {
+                if let Some((_, named_span, _)) = named {
+                    if let Some((_, default_span, _)) = default {
+                        if named_span == default_span {
+                            return false;
+                        }
                     }
                 }
             }
-        }
 
-        if has_namespace {
-            return true;
+            has_namespace || has_default
         }
-        if has_default && !same_statement {
-            return true;
-        }
+        ImportType::Default => has_default || has_namespace || has_named,
+        _ => unreachable!("other ImportType values should be already checked"),
     }
-
-    if matches!(current_type, ImportType::Default) {
-        if has_default {
-            return true;
-        }
-        if has_named && !same_statement {
-            return true;
-        }
-        if has_namespace {
-            return true;
-        }
-    }
-
-    if matches!(current_type, ImportType::SideEffect) && !existing.is_empty() {
-        return true;
-    }
-
-    false
 }
 
 #[test]
@@ -442,9 +433,23 @@ fn test() {
         export * from "os";"#,
             Some(serde_json::json!([{ "includeExports": true }])),
         ),
+        (
+            "
+                import { a } from 'f';
+                export { b as r };
+            ",
+            Some(serde_json::json!([{ "includeExports": true }])),
+        ),
     ];
 
     let fail = vec![
+        (
+            "
+                export { a } from 'foo';
+                import { f } from 'foo';
+            ",
+            Some(serde_json::json!([{ "includeExports": true }])),
+        ),
         (
             r#"import "fs";
         import "fs""#,
@@ -512,6 +517,28 @@ fn test() {
             r#"import "os";
         export * from "os";"#,
             Some(serde_json::json!([{ "includeExports": true }])),
+        ),
+        (
+            // Verifies that the error for the second line appears only once in the test snapshot.
+            // https://github.com/oxc-project/oxc/pull/11320#issuecomment-2912286528
+            r#"import type { PriorityDialogCustomClassNames, WeightDialogCustomClassNames } from "./HostEditDialogs";
+            import { PriorityDialog, WeightDialog } from "./HostEditDialogs";"#,
+            None,
+        ),
+        (
+            "
+                import b from 'foo';
+                import { a } from 'foo';
+            ",
+            None,
+        ),
+        (
+            "
+                import * as bar from 'foo';
+                import b from 'foo';
+                import { a } from 'foo';
+            ",
+            None,
         ),
     ];
 

@@ -8,7 +8,7 @@ use similar::TextDiff;
 
 use oxc::{
     allocator::Allocator,
-    codegen::{Codegen, CodegenOptions},
+    codegen::{Codegen, CodegenOptions, CommentOptions},
     diagnostics::{NamedSource, OxcDiagnostic},
     parser::{ParseOptions, Parser},
     span::{SourceType, VALID_EXTENSIONS},
@@ -44,10 +44,10 @@ impl TestCase {
     pub fn new(cwd: &Path, path: &Path) -> Option<Self> {
         let mut options_directory_path = path.parent().unwrap().to_path_buf();
         // Try to find the override options.json
-        if let Some(path) = Self::convert_to_override_path(options_directory_path.as_path()) {
-            if path.join("options.json").exists() {
-                options_directory_path = path;
-            }
+        if let Some(path) = Self::convert_to_override_path(options_directory_path.as_path())
+            && path.join("options.json").exists()
+        {
+            options_directory_path = path;
         }
 
         let mut options = BabelOptions::from_test_path(options_directory_path.as_path());
@@ -118,13 +118,13 @@ impl TestCase {
             })?;
 
         // Try to find the override output path
-        if let Some(output_path) = Self::convert_to_override_path(&babel_output_path) {
-            if output_path.exists() {
-                return Some(output_path);
-            }
+        if let Some(output_path) = Self::convert_to_override_path(&babel_output_path)
+            && output_path.exists()
+        {
+            Some(output_path)
+        } else {
+            Some(babel_output_path)
         }
-
-        Some(babel_output_path)
     }
 
     pub fn write_override_output(&self) {
@@ -325,10 +325,12 @@ impl TestCase {
 
                     Codegen::new()
                         .with_options(CodegenOptions {
-                            comments: false,
-                            // Disable pure annotation comments for async_to_generator plugin,
-                            // because it's weird some tests have it and some don't.
-                            annotation_comments: !babel_options.plugins.async_to_generator,
+                            comments: CommentOptions {
+                                // Disable pure annotation comments for async_to_generator plugin,
+                                // because it's weird some tests have it and some don't.
+                                annotation: !babel_options.plugins.async_to_generator,
+                                ..CommentOptions::default()
+                            },
                             ..CodegenOptions::default()
                         })
                         .build(&ret.program)

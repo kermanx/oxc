@@ -8,7 +8,7 @@ use oxc_ast::{
     },
 };
 use oxc_span::{ContentEq, GetSpan, SPAN, Span};
-use oxc_syntax::number::ToJsString;
+use oxc_syntax::identifier::is_identifier_name;
 
 use crate::{
     IsolatedDeclarations,
@@ -27,7 +27,7 @@ impl<'a> IsolatedDeclarations<'a> {
             self.error(function_must_have_explicit_return_type(get_function_span(func)));
         }
 
-        let params = self.transform_formal_parameters(&func.params);
+        let params = self.transform_formal_parameters(&func.params, false);
 
         return_type.map(|return_type| {
             self.ast.ts_type_function_type(
@@ -53,7 +53,7 @@ impl<'a> IsolatedDeclarations<'a> {
             )));
         }
 
-        let params = self.transform_formal_parameters(&func.params);
+        let params = self.transform_formal_parameters(&func.params, false);
 
         return_type.map(|return_type| {
             self.ast.ts_type_function_type(
@@ -66,22 +66,21 @@ impl<'a> IsolatedDeclarations<'a> {
         })
     }
 
-    /// Convert a a computed property key to a static property key when possible
+    /// Convert a computed property key to a static property key when possible
     fn transform_property_key(&self, key: &PropertyKey<'a>) -> PropertyKey<'a> {
         match key {
-            // [100] -> 100
-            PropertyKey::NumericLiteral(literal) => self.ast.property_key_static_identifier(
-                literal.span,
-                self.ast.atom(&literal.value.to_js_string()),
-            ),
-            // `["string"] -> string`
-            PropertyKey::StringLiteral(literal) => {
+            // ["string"] -> string
+            PropertyKey::StringLiteral(literal) if is_identifier_name(&literal.value) => {
                 self.ast.property_key_static_identifier(literal.span, literal.value.as_str())
             }
-            // `[`string`] -> string
-            PropertyKey::TemplateLiteral(literal) => {
+            // [`string`] -> string
+            PropertyKey::TemplateLiteral(literal)
+                if is_identifier_name(&literal.quasis[0].value.raw) =>
+            {
                 self.ast.property_key_static_identifier(literal.span, literal.quasis[0].value.raw)
             }
+            // [100] -> 100
+            // number literal will be cloned as-is
             _ => key.clone_in(self.ast.allocator),
         }
     }
@@ -134,9 +133,11 @@ impl<'a> IsolatedDeclarations<'a> {
                         if return_type.is_none() {
                             self.error(method_must_have_explicit_return_type(object.key.span()));
                         }
-                        let params = self.transform_formal_parameters(&function.params);
+                        let params = self.transform_formal_parameters(&function.params, false);
                         let key = self.transform_property_key(key);
-                        let computed = key.is_expression();
+                        let computed = key
+                            .as_expression()
+                            .is_some_and(|k| !k.is_string_literal() && !k.is_number_literal());
 
                         return Some(self.ast.ts_signature_method_signature(
                             object.span,
@@ -214,7 +215,8 @@ impl<'a> IsolatedDeclarations<'a> {
                     let key = self.transform_property_key(key);
                     let property_signature = self.ast.ts_signature_property_signature(
                         object.span,
-                        key.is_expression(),
+                        key.as_expression()
+                            .is_some_and(|k| !k.is_string_literal() && !k.is_number_literal()),
                         false,
                         is_const,
                         key,

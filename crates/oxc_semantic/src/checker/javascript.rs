@@ -1,7 +1,10 @@
+use std::ptr;
+
 use phf::{Set, phf_set};
 use rustc_hash::FxHashMap;
 
-use oxc_ast::{AstKind, ast::*};
+use oxc_allocator::GetAddress;
+use oxc_ast::{AstKind, ModuleDeclarationKind, ast::*};
 use oxc_diagnostics::{LabeledSpan, OxcDiagnostic};
 use oxc_ecmascript::{BoundNames, IsSimpleParameterList, PropName};
 use oxc_span::{GetSpan, ModuleKind, Span};
@@ -12,7 +15,7 @@ use oxc_syntax::{
     symbol::SymbolFlags,
 };
 
-use crate::{AstNode, builder::SemanticBuilder, diagnostics::redeclaration};
+use crate::{builder::SemanticBuilder, diagnostics::redeclaration};
 
 pub fn check_duplicate_class_elements(ctx: &SemanticBuilder<'_>) {
     let classes = &ctx.class_table_builder.classes;
@@ -70,7 +73,7 @@ pub const STRICT_MODE_NAMES: Set<&'static str> = phf_set! {
     "yield",
 };
 
-pub fn check_identifier<'a>(name: &str, span: Span, node: &AstNode<'a>, ctx: &SemanticBuilder<'a>) {
+pub fn check_identifier(name: &str, span: Span, ctx: &SemanticBuilder<'_>) {
     // ts module block allows revered keywords
     if ctx.current_scope_flags().is_ts_module_block() {
         return;
@@ -81,7 +84,7 @@ pub fn check_identifier<'a>(name: &str, span: Span, node: &AstNode<'a>, ctx: &Se
             return ctx.error(reserved_keyword(name, span));
         }
         // It is a Syntax Error if ClassStaticBlockStatementList Contains await is true.
-        if ctx.scoping.scope_flags(node.scope_id()).is_class_static_block() {
+        if ctx.scoping.scope_flags(ctx.current_scope_id).is_class_static_block() {
             return ctx.error(class_static_block_await(span));
         }
     }
@@ -103,29 +106,73 @@ fn invalid_let_declaration(x0: &str, span1: Span) -> OxcDiagnostic {
     .with_label(span1)
 }
 
-pub fn check_binding_identifier<'a>(
-    ident: &BindingIdentifier,
-    node: &AstNode<'a>,
-    ctx: &SemanticBuilder<'a>,
-) {
-    let strict_mode = ctx.strict_mode();
-    // It is a Diagnostic if the StringValue of a BindingIdentifier is "eval" or "arguments" within strict mode code.
-    if strict_mode && matches!(ident.name.as_str(), "eval" | "arguments") {
-        return ctx.error(unexpected_identifier_assign(&ident.name, ident.span));
-    }
+pub fn check_binding_identifier(ident: &BindingIdentifier, ctx: &SemanticBuilder<'_>) {
+    if ctx.strict_mode() {
+        // In strict mode, `eval` and `arguments` are banned as identifiers.
+        if matches!(ident.name.as_str(), "eval" | "arguments") {
+            // `eval` and `arguments` are allowed as the names of declare functions as well as their arguments.
+            //
+            // declare function eval(): void; // OK
+            // declare function arguments(): void; // OK
+            // declare function f(eval: number, arguments: number): number; // OK
+            // declare function f(...eval): number; // OK
+            // declare function f(...arguments): number; // OK
+            // type K = (arguments: any[]) => void; // OK
+            // interface Foo { bar(arguments: any[]): void; baz(...arguments: any[]): void; } // OK
+            // declare function g({eval, arguments}: {eval: number, arguments: number}): number; // Error
+            // declare function h([eval, arguments]: [number, number]): number; // Error
+            let is_declare_function = |kind: &AstKind| {
+                kind.as_function()
+                    .is_some_and(|func| matches!(func.r#type, FunctionType::TSDeclareFunction))
+            };
 
-    // LexicalDeclaration : LetOrConst BindingList ;
-    // * It is a Syntax Error if the BoundNames of BindingList contains "let".
-    if !strict_mode && ident.name == "let" {
-        for node_id in ctx.nodes.ancestor_ids(node.id()).skip(1) {
-            match ctx.nodes.kind(node_id) {
-                AstKind::VariableDeclaration(decl) if decl.kind.is_lexical() => {
-                    return ctx.error(invalid_let_declaration(decl.kind.as_str(), ident.span));
+            let parent = ctx.nodes.parent_node(ctx.current_node_id);
+            let is_ok = match parent.kind() {
+                AstKind::Function(func) => matches!(func.r#type, FunctionType::TSDeclareFunction),
+                AstKind::FormalParameter(_) => {
+                    is_declare_function(&ctx.nodes.parent_kind(parent.id()))
+                        || ctx.nodes.ancestor_kinds(parent.id()).nth(1).is_some_and(|node| {
+                            matches!(
+                                node,
+                                AstKind::TSFunctionType(_) | AstKind::TSMethodSignature(_)
+                            )
+                        })
                 }
-                AstKind::VariableDeclaration(_) | AstKind::Function(_) | AstKind::Program(_) => {
-                    break;
+                AstKind::BindingRestElement(_) => {
+                    let grand_parent = ctx.nodes.parent_node(parent.id());
+                    matches!(grand_parent.kind(), AstKind::FormalParameters(_)) && {
+                        let great_grand_parent = ctx.nodes.parent_kind(grand_parent.id());
+
+                        is_declare_function(&great_grand_parent)
+                            || matches!(
+                                great_grand_parent,
+                                AstKind::TSMethodSignature(_) | AstKind::TSFunctionType(_)
+                            )
+                    }
                 }
-                _ => {}
+                AstKind::TSTypeAliasDeclaration(_) | AstKind::TSInterfaceDeclaration(_) => true,
+                _ => false,
+            };
+
+            if !is_ok {
+                ctx.error(unexpected_identifier_assign(&ident.name, ident.span));
+            }
+        }
+    } else {
+        // LexicalDeclaration : LetOrConst BindingList ;
+        // * It is a Syntax Error if the BoundNames of BindingList contains "let".
+        if ident.name == "let" {
+            for node_kind in ctx.nodes.ancestor_kinds(ctx.current_node_id) {
+                match node_kind {
+                    AstKind::VariableDeclarator(decl) => {
+                        if decl.kind.is_lexical() {
+                            ctx.error(invalid_let_declaration(decl.kind.as_str(), ident.span));
+                        }
+                        break;
+                    }
+                    AstKind::Function(_) => break,
+                    _ => {}
+                }
             }
         }
     }
@@ -135,20 +182,33 @@ fn unexpected_arguments(x0: &str, span1: Span) -> OxcDiagnostic {
     OxcDiagnostic::error(format!("'arguments' is not allowed in {x0}")).with_label(span1)
 }
 
-pub fn check_identifier_reference<'a>(
-    ident: &IdentifierReference,
-    node: &AstNode<'a>,
-    ctx: &SemanticBuilder<'a>,
-) {
+pub fn check_identifier_reference(ident: &IdentifierReference, ctx: &SemanticBuilder<'_>) {
     //  Static Semantics: AssignmentTargetType
     //  1. If this IdentifierReference is contained in strict mode code and StringValue of Identifier is "eval" or "arguments", return invalid.
     if ctx.strict_mode() && matches!(ident.name.as_str(), "arguments" | "eval") {
-        for node_id in ctx.nodes.ancestor_ids(node.id()).skip(1) {
-            match ctx.nodes.kind(node_id) {
-                AstKind::AssignmentTarget(_) | AstKind::SimpleAssignmentTarget(_) => {
+        for node_kind in ctx.nodes.ancestor_kinds(ctx.current_node_id) {
+            match node_kind {
+                // Only check for actual assignment contexts, not member expression access
+                AstKind::ObjectAssignmentTarget(_)
+                | AstKind::AssignmentTargetPropertyIdentifier(_)
+                | AstKind::UpdateExpression(_)
+                | AstKind::ArrayAssignmentTarget(_) => {
                     return ctx.error(unexpected_identifier_assign(&ident.name, ident.span));
                 }
-                AstKind::MemberExpression(_) => break,
+                AstKind::AssignmentExpression(assign_expr) => {
+                    // only throw error if arguments or eval are being assigned to
+                    if let AssignmentTarget::AssignmentTargetIdentifier(target_ident) =
+                        &assign_expr.left
+                    {
+                        if target_ident.name == ident.name {
+                            return ctx
+                                .error(unexpected_identifier_assign(&ident.name, ident.span));
+                        }
+                    }
+                }
+                m if m.is_member_expression_kind() => {
+                    break;
+                }
                 _ => {}
             }
         }
@@ -160,8 +220,8 @@ pub fn check_identifier_reference<'a>(
     //   It is a Syntax Error if ContainsArguments of ClassStaticBlockStatementList is true.
 
     if ident.name == "arguments" {
-        for node_id in ctx.nodes.ancestor_ids(node.id()).skip(1) {
-            match ctx.nodes.kind(node_id) {
+        for node_kind in ctx.nodes.ancestor_kinds(ctx.current_node_id) {
+            match node_kind {
                 AstKind::Function(_) => break,
                 AstKind::PropertyDefinition(_) => {
                     return ctx.error(unexpected_arguments("class field initializer", ident.span));
@@ -322,11 +382,7 @@ fn module_code(x0: &str, span1: Span) -> OxcDiagnostic {
     OxcDiagnostic::error(format!("Cannot use {x0} outside a module")).with_label(span1)
 }
 
-pub fn check_module_declaration<'a>(
-    decl: &ModuleDeclaration,
-    node: &AstNode<'a>,
-    ctx: &SemanticBuilder<'a>,
-) {
+pub fn check_module_declaration(decl: &ModuleDeclarationKind, ctx: &SemanticBuilder<'_>) {
     // It is ambiguous between script and module for `TypeScript`, skipping this check for now.
     // Basically we need to "upgrade" from script to module if we see any module syntax inside the
     // semantic builder
@@ -335,15 +391,15 @@ pub fn check_module_declaration<'a>(
     }
 
     let text = match decl {
-        ModuleDeclaration::ImportDeclaration(_) => "import statement",
-        ModuleDeclaration::ExportAllDeclaration(_)
-        | ModuleDeclaration::ExportDefaultDeclaration(_)
-        | ModuleDeclaration::ExportNamedDeclaration(_)
-        | ModuleDeclaration::TSExportAssignment(_)
-        | ModuleDeclaration::TSNamespaceExportDeclaration(_) => "export statement",
+        ModuleDeclarationKind::Import(_) => "import statement",
+        ModuleDeclarationKind::ExportAll(_)
+        | ModuleDeclarationKind::ExportDefault(_)
+        | ModuleDeclarationKind::ExportNamed(_)
+        | ModuleDeclarationKind::TSExportAssignment(_)
+        | ModuleDeclarationKind::TSNamespaceExport(_) => "export statement",
     };
     let start = decl.span().start;
-    let span = Span::new(start, start + 6);
+    let span = Span::sized(start, 6);
     match ctx.source_type.module_kind() {
         ModuleKind::Unambiguous => {
             #[cfg(debug_assertions)]
@@ -353,7 +409,7 @@ pub fn check_module_declaration<'a>(
             ctx.error(module_code(text, span));
         }
         ModuleKind::Module => {
-            if matches!(ctx.nodes.parent_kind(node.id()), Some(AstKind::Program(_))) {
+            if matches!(ctx.nodes.parent_kind(ctx.current_node_id), AstKind::Program(_)) {
                 return;
             }
             ctx.error(top_level(text, span));
@@ -373,7 +429,7 @@ fn import_meta(span: Span) -> OxcDiagnostic {
         .with_label(span)
 }
 
-pub fn check_meta_property<'a>(prop: &MetaProperty, node: &AstNode<'a>, ctx: &SemanticBuilder<'a>) {
+pub fn check_meta_property(prop: &MetaProperty, ctx: &SemanticBuilder<'_>) {
     match prop.meta.name.as_str() {
         "import" => {
             if prop.property.name == "meta" && ctx.source_type.is_script() {
@@ -383,7 +439,7 @@ pub fn check_meta_property<'a>(prop: &MetaProperty, node: &AstNode<'a>, ctx: &Se
         "new" => {
             if prop.property.name == "target" {
                 let mut in_function_scope = false;
-                for scope_id in ctx.scoping.scope_ancestors(node.scope_id()) {
+                for scope_id in ctx.scoping.scope_ancestors(ctx.current_scope_id) {
                     let flags = ctx.scoping.scope_flags(scope_id);
                     // In arrow functions, new.target is inherited from the surrounding scope.
                     if flags.contains(ScopeFlags::Arrow) {
@@ -435,7 +491,6 @@ pub fn check_function_declaration<'a>(
 // It is a Syntax Error if IsLabelledFunction(Statement) is true.
 pub fn check_function_declaration_in_labeled_statement<'a>(
     body: &Statement<'a>,
-    node: &AstNode<'a>,
     ctx: &SemanticBuilder<'a>,
 ) {
     if let Statement::FunctionDeclaration(decl) = body {
@@ -443,7 +498,7 @@ pub fn check_function_declaration_in_labeled_statement<'a>(
             ctx.error(function_declaration_strict(decl.span));
         } else {
             // skip(1) for `LabeledStatement`
-            for kind in ctx.nodes.ancestor_kinds(node.id()).skip(1) {
+            for kind in ctx.nodes.ancestor_kinds(ctx.current_node_id) {
                 match kind {
                     // Nested labeled statement
                     AstKind::LabeledStatement(_) => {}
@@ -454,7 +509,6 @@ pub fn check_function_declaration_in_labeled_statement<'a>(
                     | AstKind::DoWhileStatement(_)
                     | AstKind::WithStatement(_)
                     | AstKind::IfStatement(_) => break,
-
                     _ => return,
                 }
             }
@@ -487,12 +541,38 @@ pub fn check_variable_declarator_redeclaration(
     });
 }
 
+/// Check for Annex B `if (foo) function a() {} else function b() {}`
+pub fn is_function_part_of_if_statement(function: &Function, builder: &SemanticBuilder) -> bool {
+    if builder.current_scope_flags().is_strict_mode() {
+        return false;
+    }
+    let AstKind::IfStatement(stmt) = builder.nodes.parent_kind(builder.current_node_id) else {
+        return false;
+    };
+    if let Statement::FunctionDeclaration(func) = &stmt.consequent {
+        if ptr::eq(func.as_ref(), function) {
+            return true;
+        }
+    }
+    if let Some(Statement::FunctionDeclaration(func)) = &stmt.alternate {
+        if ptr::eq(func.as_ref(), function) {
+            return true;
+        }
+    }
+    false
+}
+
 // It is a Syntax Error if the LexicallyDeclaredNames of StatementList contains any duplicate entries,
 // unless the source text matched by this production is not strict mode code
 // and the duplicate entries are only bound by FunctionDeclarations.
 // https://tc39.es/ecma262/#sec-block-level-function-declarations-web-legacy-compatibility-semantics
 pub fn check_function_redeclaration(func: &Function, ctx: &SemanticBuilder<'_>) {
     let Some(id) = &func.id else { return };
+
+    if is_function_part_of_if_statement(func, ctx) {
+        return;
+    }
+
     let symbol_id = id.symbol_id();
 
     let redeclarations = ctx.scoping.symbol_redeclarations(symbol_id);
@@ -545,27 +625,13 @@ pub fn check_class_redeclaration(class: &Class, ctx: &SemanticBuilder<'_>) {
     }
 }
 
-fn reg_exp_flag_u_and_v(span: Span) -> OxcDiagnostic {
-    OxcDiagnostic::error(
-        "The 'u' and 'v' regular expression flags cannot be enabled at the same time",
-    )
-    .with_label(span)
-}
-
-pub fn check_regexp_literal(lit: &RegExpLiteral, ctx: &SemanticBuilder<'_>) {
-    let flags = lit.regex.flags;
-    if flags.contains(RegExpFlags::U | RegExpFlags::V) {
-        ctx.error(reg_exp_flag_u_and_v(lit.span));
-    }
-}
-
 fn with_statement(span: Span) -> OxcDiagnostic {
     OxcDiagnostic::error("'with' statements are not allowed").with_label(span)
 }
 
 pub fn check_with_statement(stmt: &WithStatement, ctx: &SemanticBuilder<'_>) {
     if ctx.strict_mode() || ctx.source_type.is_typescript() {
-        ctx.error(with_statement(Span::new(stmt.span.start, stmt.span.start + 4)));
+        ctx.error(with_statement(Span::sized(stmt.span.start, 4)));
     }
 }
 
@@ -604,14 +670,10 @@ fn invalid_break(span: Span) -> OxcDiagnostic {
 .with_label(span)
 }
 
-pub fn check_break_statement<'a>(
-    stmt: &BreakStatement,
-    node: &AstNode<'a>,
-    ctx: &SemanticBuilder<'a>,
-) {
+pub fn check_break_statement(stmt: &BreakStatement, ctx: &SemanticBuilder<'_>) {
     // It is a Syntax Error if this BreakStatement is not nested, directly or indirectly (but not crossing function or static initialization block boundaries), within an IterationStatement or a SwitchStatement.
-    for node_id in ctx.nodes.ancestor_ids(node.id()).skip(1) {
-        match ctx.nodes.kind(node_id) {
+    for node_kind in ctx.nodes.ancestor_kinds(ctx.current_node_id) {
+        match node_kind {
             AstKind::Program(_) => {
                 return stmt.label.as_ref().map_or_else(
                     || ctx.error(invalid_break(stmt.span)),
@@ -650,14 +712,10 @@ fn invalid_continue(span: Span) -> OxcDiagnostic {
 .with_label(span)
 }
 
-pub fn check_continue_statement<'a>(
-    stmt: &ContinueStatement,
-    node: &AstNode<'a>,
-    ctx: &SemanticBuilder<'a>,
-) {
+pub fn check_continue_statement(stmt: &ContinueStatement, ctx: &SemanticBuilder<'_>) {
     // It is a Syntax Error if this ContinueStatement is not nested, directly or indirectly (but not crossing function or static initialization block boundaries), within an IterationStatement.
-    for node_id in ctx.nodes.ancestor_ids(node.id()).skip(1) {
-        match ctx.nodes.kind(node_id) {
+    for node_kind in ctx.nodes.ancestor_kinds(ctx.current_node_id) {
+        match node_kind {
             AstKind::Program(_) => {
                 return stmt.label.as_ref().map_or_else(
                     || ctx.error(invalid_continue(stmt.span)),
@@ -704,15 +762,13 @@ fn label_redeclaration(x0: &str, span1: Span, span2: Span) -> OxcDiagnostic {
     ])
 }
 
-pub fn check_labeled_statement<'a>(
-    stmt: &LabeledStatement,
-    node: &AstNode<'a>,
-    ctx: &SemanticBuilder<'a>,
-) {
-    for node_id in ctx.nodes.ancestor_ids(node.id()).skip(1) {
-        match ctx.nodes.kind(node_id) {
+pub fn check_labeled_statement(stmt: &LabeledStatement, ctx: &SemanticBuilder<'_>) {
+    for node_kind in ctx.nodes.ancestor_kinds(ctx.current_node_id) {
+        match node_kind {
             // label cannot cross boundary on function or static block
-            AstKind::Function(_) | AstKind::StaticBlock(_) | AstKind::Program(_) => break,
+            AstKind::Function(_)
+            | AstKind::ArrowFunctionExpression(_)
+            | AstKind::StaticBlock(_) => break,
             // check label name redeclaration
             AstKind::LabeledStatement(label_stmt) if stmt.label.name == label_stmt.label.name => {
                 return ctx.error(label_redeclaration(
@@ -780,15 +836,18 @@ fn require_class_name(span: Span) -> OxcDiagnostic {
     OxcDiagnostic::error("A class name is required.").with_label(span)
 }
 
-pub fn check_class(class: &Class, node: &AstNode<'_>, ctx: &SemanticBuilder<'_>) {
+pub fn check_class(class: &Class, ctx: &SemanticBuilder<'_>) {
     check_private_identifier(ctx);
 
     if class.is_declaration()
         && class.id.is_none()
-        && !matches!(ctx.nodes.parent_kind(node.id()), Some(AstKind::ExportDefaultDeclaration(_)))
+        && !matches!(
+            ctx.nodes.parent_kind(ctx.current_node_id),
+            AstKind::ExportDefaultDeclaration(_)
+        )
     {
         let start = class.span.start;
-        ctx.error(require_class_name(Span::new(start, start + 5)));
+        ctx.error(require_class_name(Span::sized(start, 5)));
     }
 
     // ClassBody : ClassElementList
@@ -812,45 +871,6 @@ pub fn check_class(class: &Class, node: &AstNode<'_>, ctx: &SemanticBuilder<'_>)
     }
 }
 
-fn setter_with_parameters(span: Span) -> OxcDiagnostic {
-    OxcDiagnostic::error("A 'set' accessor must have exactly one parameter.").with_label(span)
-}
-
-fn setter_with_rest_parameter(span: Span) -> OxcDiagnostic {
-    OxcDiagnostic::error("A 'set' accessor cannot have rest parameter.").with_label(span)
-}
-
-fn check_setter(function: &Function<'_>, ctx: &SemanticBuilder<'_>) {
-    function.params.rest.as_ref().map_or_else(
-        || {
-            if function.params.parameters_count() != 1 {
-                ctx.error(setter_with_parameters(function.params.span));
-            }
-        },
-        |rest| {
-            ctx.error(setter_with_rest_parameter(rest.span));
-        },
-    );
-}
-
-fn getter_parameters(span: Span) -> OxcDiagnostic {
-    OxcDiagnostic::error("A 'get' accessor must not have any formal parameters.").with_label(span)
-}
-
-fn check_getter(function: &Function<'_>, ctx: &SemanticBuilder<'_>) {
-    if !function.params.items.is_empty() {
-        ctx.error(getter_parameters(function.params.span));
-    }
-}
-
-pub fn check_method_definition(method: &MethodDefinition<'_>, ctx: &SemanticBuilder<'_>) {
-    match method.kind {
-        MethodDefinitionKind::Set => check_setter(&method.value, ctx),
-        MethodDefinitionKind::Get => check_getter(&method.value, ctx),
-        _ => {}
-    }
-}
-
 fn super_without_derived_class(span: Span, span1: Span) -> OxcDiagnostic {
     OxcDiagnostic::error("'super' can only be referenced in a derived class.")
         .with_help("either remove this super, or extend the class")
@@ -870,26 +890,35 @@ fn unexpected_super_reference(span: Span) -> OxcDiagnostic {
 .with_label(span)
 }
 
-pub fn check_super<'a>(sup: &Super, node: &AstNode<'a>, ctx: &SemanticBuilder<'a>) {
-    let super_call_span = match ctx.nodes.parent_kind(node.id()) {
-        Some(AstKind::CallExpression(expr)) => Some(expr.span),
-        Some(AstKind::NewExpression(expr)) => Some(expr.span),
+pub fn check_super(sup: &Super, ctx: &SemanticBuilder<'_>) {
+    let super_call_span = match ctx.nodes.parent_kind(ctx.current_node_id) {
+        AstKind::CallExpression(expr) => Some(expr.span),
+        AstKind::NewExpression(expr) => Some(expr.span),
         _ => None,
     };
 
     let Some(class_id) = ctx.class_table_builder.current_class_id else {
+        // Not in a class. `super` only valid in an object method.
         for scope_id in ctx.scoping.scope_ancestors(ctx.current_scope_id) {
             let flags = ctx.scoping.scope_flags(scope_id);
-            if flags.is_function()
-                && matches!(
-                    ctx.nodes.parent_kind(ctx.scoping.get_node_id(scope_id)),
-                    Some(AstKind::ObjectProperty(_))
-                )
-            {
-                if let Some(super_call_span) = super_call_span {
-                    ctx.error(unexpected_super_call(super_call_span));
+            if flags.is_function() && !flags.is_arrow() {
+                let func_node_id = ctx.scoping.get_node_id(scope_id);
+                if let AstKind::ObjectProperty(prop) = ctx.nodes.parent_kind(func_node_id) {
+                    if prop.method || prop.kind != PropertyKind::Init {
+                        // Function's parent is an `ObjectProperty` representing a method/getter/setter.
+                        // Check the function is the value of the property, not computed key.
+                        // Valid: `obj = { method() { super.foo } }`
+                        // Invalid: `obj = { [ function() { super.foo } ]() {} }`
+                        let func_kind = ctx.nodes.kind(func_node_id);
+                        if func_kind.address() == prop.value.address() {
+                            if let Some(super_call_span) = super_call_span {
+                                ctx.error(unexpected_super_call(super_call_span));
+                            }
+                            return;
+                        }
+                    }
                 }
-                return;
+                break;
             }
         }
 
@@ -897,12 +926,15 @@ pub fn check_super<'a>(sup: &Super, node: &AstNode<'a>, ctx: &SemanticBuilder<'a
         // * It is a Syntax Error if ModuleItemList Contains super.
         // ScriptBody : StatementList
         // * It is a Syntax Error if StatementList Contains super
-        return super_call_span.map_or_else(
-            || ctx.error(unexpected_super_reference(sup.span)),
-            |super_call_span| ctx.error(unexpected_super_call(super_call_span)),
-        );
+        if let Some(super_call_span) = super_call_span {
+            ctx.error(unexpected_super_call(super_call_span));
+        } else {
+            ctx.error(unexpected_super_reference(sup.span));
+        }
+        return;
     };
 
+    // In a class
     let class_node_id = ctx.class_table_builder.classes.get_node_id(class_id);
     let AstKind::Class(class) = ctx.nodes.kind(class_node_id) else { unreachable!() };
     let class_scope_id = class.scope_id();
@@ -949,26 +981,16 @@ pub fn check_super<'a>(sup: &Super, node: &AstNode<'a>, ctx: &SemanticBuilder<'a
 
         if flags.is_function() && !flags.is_arrow() {
             // * It is a Syntax Error if FunctionBody Contains SuperProperty is true.
-            // Check this function if is a class method, if it isn't, then it a plain function
+            // Check this function if is a class or object method, if it isn't, then it a plain function
             let function_node_id = ctx.scoping.get_node_id(scope_id);
-            let is_class_method = matches!(
-                ctx.nodes.parent_kind(function_node_id),
-                Some(AstKind::MethodDefinition(_))
-            );
-            if !is_class_method {
+            let parent_kind = ctx.nodes.parent_kind(function_node_id);
+            let is_class_method = matches!(parent_kind, AstKind::MethodDefinition(_));
+            // For `class C { foo() { return { bar() { super.bar(); } }; } }`
+            let is_object_method = matches!(parent_kind, AstKind::ObjectProperty(_));
+            if !is_class_method && !is_object_method {
                 ctx.error(unexpected_super_reference(sup.span));
             }
             return;
-        }
-    }
-}
-
-pub fn check_object_property(prop: &ObjectProperty, ctx: &SemanticBuilder<'_>) {
-    if let Expression::FunctionExpression(function) = &prop.value {
-        match prop.kind {
-            PropertyKind::Set => check_setter(function, ctx),
-            PropertyKind::Get => check_getter(function, ctx),
-            PropertyKind::Init => {}
         }
     }
 }
@@ -1019,12 +1041,13 @@ fn super_private(span: Span) -> OxcDiagnostic {
     OxcDiagnostic::error("Private fields cannot be accessed on super").with_label(span)
 }
 
-pub fn check_member_expression(member_expr: &MemberExpression, ctx: &SemanticBuilder<'_>) {
-    if let MemberExpression::PrivateFieldExpression(private_expr) = member_expr {
-        // `super.#m`
-        if private_expr.object.is_super() {
-            ctx.error(super_private(private_expr.span));
-        }
+pub fn check_private_field_expression(
+    private_expr: &PrivateFieldExpression,
+    ctx: &SemanticBuilder<'_>,
+) {
+    // `super.#m`
+    if private_expr.object.is_super() {
+        ctx.error(super_private(private_expr.span));
     }
 }
 
@@ -1057,9 +1080,9 @@ pub fn check_unary_expression(unary_expr: &UnaryExpression, ctx: &SemanticBuilde
     }
 }
 
-fn is_in_formal_parameters<'a>(node: &AstNode<'a>, ctx: &SemanticBuilder<'a>) -> bool {
-    for node_id in ctx.nodes.ancestor_ids(node.id()).skip(1) {
-        match ctx.nodes.kind(node_id) {
+fn is_in_formal_parameters(ctx: &SemanticBuilder<'_>) -> bool {
+    for node_kind in ctx.nodes.ancestor_kinds(ctx.current_node_id) {
+        match node_kind {
             AstKind::FormalParameter(_) => return true,
             AstKind::Program(_) | AstKind::Function(_) | AstKind::ArrowFunctionExpression(_) => {
                 break;
@@ -1075,27 +1098,19 @@ fn await_or_yield_in_parameter(x0: &str, span1: Span) -> OxcDiagnostic {
         .with_label(span1.label(format!("{x0} expression not allowed in formal parameter")))
 }
 
-pub fn check_await_expression<'a>(
-    expr: &AwaitExpression,
-    node: &AstNode<'a>,
-    ctx: &SemanticBuilder<'a>,
-) {
-    if is_in_formal_parameters(node, ctx) {
+pub fn check_await_expression(expr: &AwaitExpression, ctx: &SemanticBuilder<'_>) {
+    if is_in_formal_parameters(ctx) {
         ctx.error(await_or_yield_in_parameter("await", expr.span));
     }
     // It is a Syntax Error if ClassStaticBlockStatementList Contains await is true.
-    if ctx.scoping.scope_flags(node.scope_id()).is_class_static_block() {
+    if ctx.scoping.scope_flags(ctx.current_scope_id).is_class_static_block() {
         let start = expr.span.start;
-        ctx.error(class_static_block_await(Span::new(start, start + 5)));
+        ctx.error(class_static_block_await(Span::sized(start, 5)));
     }
 }
 
-pub fn check_yield_expression<'a>(
-    expr: &YieldExpression,
-    node: &AstNode<'a>,
-    ctx: &SemanticBuilder<'a>,
-) {
-    if is_in_formal_parameters(node, ctx) {
+pub fn check_yield_expression(expr: &YieldExpression, ctx: &SemanticBuilder<'_>) {
+    if is_in_formal_parameters(ctx) {
         ctx.error(await_or_yield_in_parameter("yield", expr.span));
     }
 }

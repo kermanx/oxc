@@ -1,7 +1,6 @@
 ---
 source: crates/oxc_semantic/tests/main.rs
 input_file: crates/oxc_semantic/tests/fixtures/oxc/ts/functions/return-type.ts
-snapshot_kind: text
 ---
 [
   {
@@ -74,13 +73,13 @@ snapshot_kind: text
             "flags": "ReferenceFlags(Type)",
             "id": 0,
             "name": "T",
-            "node_id": 12
+            "node_id": 10
           },
           {
             "flags": "ReferenceFlags(Type)",
             "id": 1,
             "name": "T",
-            "node_id": 27
+            "node_id": 24
           }
         ]
       },

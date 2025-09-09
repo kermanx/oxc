@@ -100,11 +100,12 @@ use oxc_syntax::{
     symbol::SymbolFlags,
     xml_entities::XML_ENTITIES,
 };
-use oxc_traverse::{BoundIdentifier, Traverse, TraverseCtx};
+use oxc_traverse::{BoundIdentifier, Traverse};
 
 use crate::{
-    TransformCtx,
+    context::{TransformCtx, TraverseCtx},
     es2018::{ObjectRestSpread, ObjectRestSpreadOptions},
+    state::TransformState,
 };
 
 use super::{
@@ -309,7 +310,7 @@ impl<'a, 'ctx> AutomaticModuleBindings<'a, 'ctx> {
 }
 
 #[inline]
-fn get_import_source(jsx_runtime_importer: &str, react_importer_len: u32) -> Atom {
+fn get_import_source(jsx_runtime_importer: &str, react_importer_len: u32) -> Atom<'_> {
     Atom::from(&jsx_runtime_importer[..react_importer_len as usize])
 }
 
@@ -491,7 +492,7 @@ impl<'a, 'ctx> JsxImpl<'a, 'ctx> {
     }
 }
 
-impl<'a> Traverse<'a> for JsxImpl<'a, '_> {
+impl<'a> Traverse<'a, TransformState<'a>> for JsxImpl<'a, '_> {
     fn exit_program(&mut self, _program: &mut Program<'a>, ctx: &mut TraverseCtx<'a>) {
         self.insert_filename_var_statement(ctx);
     }
@@ -623,7 +624,12 @@ impl<'a> JsxImpl<'a, '_> {
                     // optimize `{...prop}` to `prop` in static mode
                     JSXAttributeItem::SpreadAttribute(spread) => {
                         let JSXSpreadAttribute { argument, span } = spread.unbox();
-                        if is_classic && attributes_len == 1 {
+                        if is_classic
+                            && attributes_len == 1
+                            // Don't optimize when dev plugins are enabled - spread must be preserved
+                            // to merge with injected `__self` and `__source` props
+                            && !(self.options.jsx_self_plugin || self.options.jsx_source_plugin)
+                        {
                             // deopt if spreading an object with `__proto__` key
                             if !matches!(&argument, Expression::ObjectExpression(o) if has_proto(o))
                             {
@@ -1091,7 +1097,7 @@ impl<'a> JsxImpl<'a, '_> {
 
     /// Replace entities like "&nbsp;", "&#123;", and "&#xDEADBEEF;" with the characters they encode.
     /// * See <https://en.wikipedia.org/wiki/List_of_XML_and_HTML_character_entity_references>
-    /// Code adapted from <https://github.com/microsoft/TypeScript/blob/514f7e639a2a8466c075c766ee9857a30ed4e196/src/compiler/transformers/jsx.ts#L617C1-L635>
+    ///   Code adapted from <https://github.com/microsoft/TypeScript/blob/514f7e639a2a8466c075c766ee9857a30ed4e196/src/compiler/transformers/jsx.ts#L617C1-L635>
     ///
     /// If either:
     /// (a) Text contains any HTML entities that need to be decoded, or
@@ -1110,12 +1116,14 @@ impl<'a> JsxImpl<'a, '_> {
         let mut prev = 0;
         while let Some((i, c)) = chars.next() {
             if c == '&' {
-                let start = i;
+                let mut start = i;
                 let mut end = None;
                 for (j, c) in chars.by_ref() {
                     if c == ';' {
                         end.replace(j);
                         break;
+                    } else if c == '&' {
+                        start = j;
                     }
                 }
                 if let Some(end) = end {
@@ -1234,7 +1242,7 @@ mod test {
     use oxc_traverse::ReusableTraverseCtx;
 
     use super::Pragma;
-    use crate::{TransformCtx, TransformOptions};
+    use crate::{TransformCtx, TransformOptions, state::TransformState};
 
     macro_rules! setup {
         ($traverse_ctx:ident, $transform_ctx:ident) => {
@@ -1243,8 +1251,9 @@ mod test {
             let mut scoping = Scoping::default();
             scoping.add_scope(None, NodeId::DUMMY, ScopeFlags::Top);
 
-            let traverse_ctx = ReusableTraverseCtx::new(scoping, &allocator);
-            // SAFETY: Macro user only gets a `&mut TraverseCtx`, which cannot be abused
+            let state = TransformState::default();
+            let traverse_ctx = ReusableTraverseCtx::new(state, scoping, &allocator);
+            // SAFETY: Macro user only gets a `&mut TransCtx`, which cannot be abused
             let mut traverse_ctx = unsafe { traverse_ctx.unwrap() };
             let $traverse_ctx = &mut traverse_ctx;
 
@@ -1365,5 +1374,15 @@ mod test {
         assert_eq!(&meta_prop.meta.name, "import");
         assert_eq!(&meta_prop.property.name, "meta");
         assert_eq!(member.property.name, "prop");
+    }
+
+    #[test]
+    fn entity_after_stray_amp() {
+        setup!(traverse_ctx, _transform_ctx);
+        let input = "& &amp;";
+        let mut acc = None;
+        super::JsxImpl::decode_entities(input, &mut acc, input.len(), traverse_ctx);
+        let out = acc.as_ref().unwrap().as_str();
+        assert_eq!(out, "& &");
     }
 }

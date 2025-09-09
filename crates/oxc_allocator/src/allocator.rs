@@ -1,8 +1,18 @@
-use std::{alloc::Layout, ptr, slice, str};
+use std::{
+    alloc::Layout,
+    ptr::{self, NonNull},
+    slice, str,
+};
+
+#[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
+use std::mem::offset_of;
 
 use bumpalo::Bump;
 
 use oxc_data_structures::assert_unchecked;
+
+#[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
+use crate::tracking::AllocationStats;
 
 /// A bump-allocated memory arena.
 ///
@@ -109,7 +119,7 @@ use oxc_data_structures::assert_unchecked;
 ///
 /// If workload is completely uniform, it reaches stable state on the 3rd round.
 ///
-/// ```ignore
+/// ```
 /// # use oxc_allocator::Allocator;
 /// let mut allocator = Allocator::new();
 ///
@@ -162,9 +172,8 @@ use oxc_data_structures::assert_unchecked;
 /// [`HashMap::new_in`], and all other methods which store data in the arena will refuse to compile
 /// if called with a [`Drop`] type.
 ///
-/// ```ignore
+/// ```compile_fail
 /// use oxc_allocator::{Allocator, Box};
-///
 /// let allocator = Allocator::new();
 ///
 /// struct Foo {
@@ -177,6 +186,11 @@ use oxc_data_structures::assert_unchecked;
 ///
 /// // This will fail to compile because `Foo` implements `Drop`
 /// let foo = Box::new_in(Foo { a: 0 }, &allocator);
+/// ```
+///
+/// ```compile_fail
+/// use oxc_allocator::{Allocator, Box};
+/// let allocator = Allocator::new();
 ///
 /// struct Bar {
 ///     v: std::vec::Vec<u8>,
@@ -207,7 +221,17 @@ use oxc_data_structures::assert_unchecked;
 #[derive(Default)]
 pub struct Allocator {
     bump: Bump,
+    /// Used to track number of allocations made in this allocator when `track_allocations` feature is enabled
+    #[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
+    pub(crate) stats: AllocationStats,
 }
+
+/// Offset of `stats` field, relative to `bump` field.
+/// Used in `tracking` module for allocation tracking.
+#[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
+#[expect(clippy::cast_possible_wrap)]
+pub const STATS_FIELD_OFFSET: isize =
+    (offset_of!(Allocator, stats) as isize) - (offset_of!(Allocator, bump) as isize);
 
 impl Allocator {
     /// Create a new [`Allocator`] with no initial capacity.
@@ -233,7 +257,11 @@ impl Allocator {
     #[expect(clippy::inline_always)]
     #[inline(always)]
     pub fn new() -> Self {
-        Self { bump: Bump::new() }
+        Self {
+            bump: Bump::new(),
+            #[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
+            stats: AllocationStats::default(),
+        }
     }
 
     /// Create a new [`Allocator`] with specified capacity.
@@ -244,7 +272,11 @@ impl Allocator {
     #[expect(clippy::inline_always)]
     #[inline(always)]
     pub fn with_capacity(capacity: usize) -> Self {
-        Self { bump: Bump::with_capacity(capacity) }
+        Self {
+            bump: Bump::with_capacity(capacity),
+            #[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
+            stats: AllocationStats::default(),
+        }
     }
 
     /// Allocate an object in this [`Allocator`] and return an exclusive reference to it.
@@ -268,6 +300,9 @@ impl Allocator {
     pub fn alloc<T>(&self, val: T) -> &mut T {
         const { assert!(!std::mem::needs_drop::<T>(), "Cannot allocate Drop type in arena") };
 
+        #[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
+        self.stats.record_allocation();
+
         self.bump.alloc(val)
     }
 
@@ -289,7 +324,48 @@ impl Allocator {
     #[expect(clippy::inline_always)]
     #[inline(always)]
     pub fn alloc_str<'alloc>(&'alloc self, src: &str) -> &'alloc str {
+        #[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
+        self.stats.record_allocation();
+
         self.bump.alloc_str(src)
+    }
+
+    /// `Copy` a slice into this `Bump` and return an exclusive reference to the copy.
+    ///
+    /// # Panics
+    /// Panics if reserving space for the slice fails.
+    ///
+    /// # Examples
+    /// ```
+    /// use oxc_allocator::Allocator;
+    /// let allocator = Allocator::default();
+    /// let x = allocator.alloc_slice_copy(&[1, 2, 3]);
+    /// assert_eq!(x, &[1, 2, 3]);
+    /// ```
+    // `#[inline(always)]` because this is a hot path and `Bump::alloc_slice_copy` is a very small function.
+    // We always want it to be inlined.
+    #[expect(clippy::inline_always)]
+    #[inline(always)]
+    pub fn alloc_slice_copy<T: Copy>(&self, src: &[T]) -> &mut [T] {
+        #[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
+        self.stats.record_allocation();
+
+        self.bump.alloc_slice_copy(src)
+    }
+
+    /// Allocate space for an object with the given [`Layout`].
+    ///
+    /// The returned pointer points at uninitialized memory, and should be initialized with
+    /// [`std::ptr::write`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if reserving space matching `layout` fails.
+    pub fn alloc_layout(&self, layout: Layout) -> NonNull<u8> {
+        #[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
+        self.stats.record_allocation();
+
+        self.bump.alloc_layout(layout)
     }
 
     /// Create new `&str` from a fixed-size array of `&str`s concatenated together,
@@ -338,6 +414,9 @@ impl Allocator {
             isize::try_from(total_len).is_ok(),
             "attempted to create a string longer than `isize::MAX` bytes"
         );
+
+        #[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
+        self.stats.record_allocation();
 
         // Create actual `&str` in a separate function, to ensure that `alloc_concat_strs_array`
         // is inlined, so that compiler has knowledge to remove the overflow checks above.
@@ -431,6 +510,9 @@ impl Allocator {
     #[expect(clippy::inline_always)]
     #[inline(always)]
     pub fn reset(&mut self) {
+        #[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
+        self.stats.reset();
+
         self.bump.reset();
     }
 
@@ -552,14 +634,13 @@ impl Allocator {
     #[expect(clippy::inline_always)]
     #[inline(always)]
     pub(crate) fn from_bump(bump: Bump) -> Self {
-        Self { bump }
+        Self {
+            bump,
+            #[cfg(all(feature = "track_allocations", not(feature = "disable_track_allocations")))]
+            stats: AllocationStats::default(),
+        }
     }
 }
-
-/// SAFETY: Not actually safe, but for enabling `Send` for downstream crates.
-unsafe impl Send for Allocator {}
-/// SAFETY: Not actually safe, but for enabling `Sync` for downstream crates.
-unsafe impl Sync for Allocator {}
 
 #[cfg(test)]
 mod test {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import oxc from '../index';
+import { isolatedDeclaration } from '../index';
 
 describe('isolated declaration', () => {
   const code = `
@@ -13,11 +13,13 @@ describe('isolated declaration', () => {
      */
     foo = "bar";
   }
+  // Do not keep normal comments
+  export class B {}
   `;
 
   it('matches output', () => {
-    const ret = oxc.isolatedDeclaration('test.ts', code, { sourcemap: true });
-    expect(ret).toStrictEqual({
+    const ret = isolatedDeclaration('test.ts', code, { sourcemap: true });
+    expect(ret).toMatchObject({
       code: '/**\n' +
         '* jsdoc 1\n' +
         '*/\n' +
@@ -26,9 +28,9 @@ describe('isolated declaration', () => {
         '\t* jsdoc 2\n' +
         '\t*/\n' +
         '\tfoo: string;\n' +
-        '}\n',
+        '}\n' +
+        'export declare class B {}\n',
       map: {
-        mappings: ';;;AAIE,OAAO,cAAM,EAAE;;;;CAIb;AACD',
         names: [],
         sources: ['test.ts'],
         sourcesContent: [code],

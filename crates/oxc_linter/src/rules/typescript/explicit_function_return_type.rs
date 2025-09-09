@@ -1,8 +1,8 @@
 use oxc_ast::{
     AstKind,
     ast::{
-        ArrowFunctionExpression, BindingPatternKind, Expression, FunctionType, JSXAttributeItem,
-        PropertyKind, Statement, TSType, TSTypeName,
+        ArrowFunctionExpression, BindingPatternKind, Expression, FunctionType, PropertyKind,
+        Statement, TSType, TSTypeName,
     },
 };
 use oxc_diagnostics::OxcDiagnostic;
@@ -24,7 +24,7 @@ use crate::{
 #[derive(Debug, Default, Clone)]
 pub struct ExplicitFunctionReturnType(Box<ExplicitFunctionReturnTypeConfig>);
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct ExplicitFunctionReturnTypeConfig {
     allow_expressions: bool,
     allow_typed_function_expressions: bool,
@@ -41,6 +41,21 @@ impl std::ops::Deref for ExplicitFunctionReturnType {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl Default for ExplicitFunctionReturnTypeConfig {
+    fn default() -> Self {
+        Self {
+            allow_expressions: false,
+            allow_typed_function_expressions: true,
+            allow_direct_const_assertion_in_arrow_functions: true,
+            allow_concise_arrow_function_expressions_starting_with_void: false,
+            allow_functions_without_type_parameters: false,
+            allowed_names: FxHashSet::default(),
+            allow_higher_order_functions: true,
+            allow_iifes: false,
+        }
     }
 }
 
@@ -398,9 +413,7 @@ impl ExplicitFunctionReturnType {
     }
 
     fn check_allow_expressions(&self, node: &AstNode, ctx: &LintContext) -> bool {
-        let Some(parent) = ctx.nodes().parent_node(node.id()) else {
-            return false;
-        };
+        let parent = ctx.nodes().parent_node(node.id());
         self.allow_expressions
             && !matches!(
                 parent.kind(),
@@ -477,8 +490,7 @@ impl ExplicitFunctionReturnType {
 
 // check function is IIFE (Immediately Invoked Function Expression)
 fn is_iife<'a>(node: &AstNode<'a>, ctx: &LintContext<'a>) -> bool {
-    let Some(AstKind::CallExpression(call)) =
-        iter_outer_expressions(ctx.semantic(), node.id()).next()
+    let Some(AstKind::CallExpression(call)) = iter_outer_expressions(ctx.nodes(), node.id()).next()
     else {
         return false;
     };
@@ -497,9 +509,7 @@ fn is_constructor_argument(node: &AstNode) -> bool {
 }
 
 fn is_constructor_or_setter(node: &AstNode, ctx: &LintContext) -> bool {
-    let Some(parent) = ctx.nodes().parent_node(node.id()) else {
-        return false;
-    };
+    let parent = ctx.nodes().parent_node(node.id());
     is_constructor(parent) || is_setter(parent)
 }
 
@@ -603,12 +613,7 @@ fn is_property_definition_with_type_annotation(node: &AstNode) -> bool {
  * ```
  */
 fn is_typed_jsx(node: &AstNode) -> bool {
-    if matches!(node.kind(), AstKind::JSXExpressionContainer(_) | AstKind::JSXSpreadAttribute(_)) {
-        return true;
-    }
-
-    let AstKind::JSXAttributeItem(jsx_attr_item) = node.kind() else { return false };
-    matches!(jsx_attr_item, JSXAttributeItem::SpreadAttribute(_))
+    matches!(node.kind(), AstKind::JSXExpressionContainer(_) | AstKind::JSXSpreadAttribute(_))
 }
 
 fn is_function(expr: &Expression) -> bool {
@@ -632,7 +637,7 @@ fn ancestor_has_return_type<'a>(node: &AstNode<'a>, ctx: &LintContext<'a>) -> bo
         }
     }
 
-    for ancestor in ctx.nodes().ancestors(node.id()).skip(1) {
+    for ancestor in ctx.nodes().ancestors(node.id()) {
         match ancestor.kind() {
             AstKind::ArrowFunctionExpression(func) => {
                 if func.return_type.is_some() {
@@ -723,9 +728,7 @@ fn is_property_of_object_with_type(node: &AstNode, ctx: &LintContext) -> bool {
     if !matches!(node.kind(), AstKind::ObjectProperty(_)) {
         return false;
     }
-    let Some(parent) = ctx.nodes().parent_node(node.id()) else {
-        return false;
-    };
+    let parent = ctx.nodes().parent_node(node.id());
     if !matches!(parent.kind(), AstKind::ObjectExpression(_)) {
         return false;
     }
@@ -771,7 +774,7 @@ fn test() {
         	  get prop(): number {
         	    return 1;
         	  }
-        	  set prop() {}
+        	  set prop(_foo) {}
         	  method(): void {
         	    return;
         	  }
@@ -1317,7 +1320,7 @@ fn test() {
         	  get prop() {
         	    return 1;
         	  }
-        	  set prop() {}
+        	  set prop(_foo) {}
         	  method() {
         	    return;
         	  }
@@ -1561,6 +1564,12 @@ fn test() {
             None,
             None,
         ),
+        (
+            "clients.filter((client) => searchWords.every((word) => client.name.toLowerCase().includes(word)) || client.cats.some((cat) => searchWords.every((word) => cat.name.toLowerCase().includes(word))))",
+            None,
+            None,
+            None,
+        ),
     ];
 
     let fail = vec![
@@ -1609,7 +1618,7 @@ fn test() {
         	  get prop() {
         	    return 1;
         	  }
-        	  set prop() {}
+        	  set prop(_foo) {}
         	  method() {
         	    return;
         	  }

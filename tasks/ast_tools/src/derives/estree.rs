@@ -251,7 +251,7 @@ fn parse_js_only_attr(location: AttrLocation, part: &AttrPart) -> Result<()> {
 fn prepare_field_orders(schema: &mut Schema, estree_derive_id: DeriveId) {
     // Note: Outside the loop to avoid allocating temporary `Vec`s on each turn of the loop.
     // Instead, reuse this `Vec` over and over.
-    let mut field_indices_temp = vec![];
+    let mut unskipped_field_indices = vec![];
 
     for type_id in schema.types.indices() {
         let Some(struct_def) = schema.types[type_id].as_struct() else { continue };
@@ -261,44 +261,46 @@ fn prepare_field_orders(schema: &mut Schema, estree_derive_id: DeriveId) {
 
         if struct_def.estree.field_indices.is_empty() {
             // No field order specified with `#[estree(field_order(...))]`.
-            // Set default order:
-            // 1. Fields without `#[ts]` attr.
-            // 2. Fields with `#[ts]` attr.
-            // 3. Added fields `#[estree(add_fields(...)]`.
-            // 4. Added fields `#[estree(add_fields(...)]`, where converter meta type has `#[ts]` attr.
-            // Within the above groups, ordered in definition order.
+            // Default field order is:
+            // 1. `type` field (if present)
+            // 2. Struct fields, in definition order.
+            // 3. Extra fields (`#[estree(add_fields(...)]`), in order.
+            // 4. `span` field (if present)
             let mut field_indices = vec![];
-            let ts_field_indices = &mut field_indices_temp;
+            let mut type_field_index = None;
+            let mut span_field_index = None;
             for (field_index, field) in struct_def.fields.iter().enumerate() {
                 if !should_skip_field(field, schema) {
                     let field_index = u8::try_from(field_index).unwrap();
-                    if field.estree.is_ts {
-                        ts_field_indices.push(field_index);
-                    } else {
-                        field_indices.push(field_index);
+                    match field.name() {
+                        "type" => type_field_index = Some(field_index),
+                        "span" => span_field_index = Some(field_index),
+                        _ => field_indices.push(field_index),
                     }
                 }
             }
 
-            let fields_len = struct_def.fields.len();
-            for (index, (_, converter_name)) in struct_def.estree.add_fields.iter().enumerate() {
-                let field_index = u8::try_from(fields_len + index).unwrap();
-                let converter = schema.meta_by_name(converter_name);
-                if converter.estree.is_ts {
-                    ts_field_indices.push(field_index);
-                } else {
-                    field_indices.push(field_index);
-                }
+            if let Some(type_field_index) = type_field_index {
+                field_indices.insert(0, type_field_index);
             }
 
-            field_indices.append(ts_field_indices);
+            if !struct_def.estree.add_fields.is_empty() {
+                let first_index = u8::try_from(struct_def.fields.len()).unwrap();
+                let last_index =
+                    u8::try_from(struct_def.fields.len() + struct_def.estree.add_fields.len() - 1)
+                        .unwrap();
+                field_indices.extend(first_index..=last_index);
+            }
+
+            if let Some(span_field_index) = span_field_index {
+                field_indices.push(span_field_index);
+            }
 
             let struct_def = schema.struct_def_mut(type_id);
             struct_def.estree.field_indices = field_indices;
         } else {
             // Custom field order specified with `#[estree(field_order(...))]`.
             // Verify does not miss any fields, no fields marked `#[estree(skip)]` are included.
-            let unskipped_field_indices = &mut field_indices_temp;
             for (field_index, field) in struct_def.fields.iter().enumerate() {
                 if !should_skip_field(field, schema) {
                     let field_index = u8::try_from(field_index).unwrap();
@@ -432,6 +434,13 @@ impl<'s> StructSerializerGenerator<'s> {
             return;
         }
 
+        if field.name() == "span" {
+            self.stmts.extend(quote! {
+                state.serialize_span(#self_path.span);
+            });
+            return;
+        }
+
         let field_name_ident = field.ident();
 
         if should_flatten_field(field, self.schema) {
@@ -486,15 +495,34 @@ impl<'s> StructSerializerGenerator<'s> {
             }
         } else if field.estree.json_safe {
             // Wrap value in `JsonSafeString(...)` if field is tagged `#[estree(json_safe)]`
-            match field.type_def(self.schema).name() {
-                "&str" => quote!( JsonSafeString(#self_path.#field_name_ident) ),
-                "Atom" => quote!( JsonSafeString(#self_path.#field_name_ident.as_str()) ),
-                _ => panic!(
+            let value = match field.type_def(self.schema) {
+                TypeDef::Primitive(primitive_def) => match primitive_def.name() {
+                    "&str" => Some(quote!( JsonSafeString(#self_path.#field_name_ident) )),
+                    "Atom" => Some(quote!( JsonSafeString(#self_path.#field_name_ident.as_str()) )),
+                    _ => None,
+                },
+                TypeDef::Option(option_def) => option_def
+                    .inner_type(self.schema)
+                    .as_primitive()
+                    .and_then(|primitive_def| match primitive_def.name() {
+                        "&str" => Some(quote! {
+                            #self_path.#field_name_ident.map(|s| JsonSafeString(s))
+                        }),
+                        "Atom" => Some(quote! {
+                            #self_path.#field_name_ident.map(|s| JsonSafeString(s.as_str()))
+                        }),
+                        _ => None,
+                    }),
+                _ => None,
+            };
+
+            value.unwrap_or_else(|| {
+                panic!(
                     "`#[estree(json_safe)]` is only valid on struct fields containing a `&str` or `Atom`: {}::{}",
                     struct_def.name(),
                     field.name(),
-                ),
-            }
+                )
+            })
         } else {
             quote!( #self_path.#field_name_ident )
         };

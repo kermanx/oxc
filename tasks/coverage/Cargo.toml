@@ -34,12 +34,13 @@ encoding_rs = { workspace = true }
 encoding_rs_io = { workspace = true }
 futures = { workspace = true }
 lazy-regex = { workspace = true }
+phf = { workspace = true }
 pico-args = { workspace = true }
 rayon = { workspace = true }
 rustc-hash = { workspace = true }
 saphyr = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true, features = ["unbounded_depth", "preserve_order"] }
+serde_json = { workspace = true }
 similar = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 walkdir = { workspace = true }

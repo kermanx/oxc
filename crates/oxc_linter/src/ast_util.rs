@@ -1,11 +1,13 @@
 use std::borrow::Cow;
 
+use rustc_hash::FxHashSet;
+
 use oxc_ast::{
     AstKind,
     ast::{BindingIdentifier, *},
 };
-use oxc_ecmascript::{ToBoolean, is_global_reference::WithoutGlobalReferenceInformation};
-use oxc_semantic::{AstNode, IsGlobalReference, NodeId, ReferenceId, Semantic, SymbolId};
+use oxc_ecmascript::{ToBoolean, WithoutGlobalReferenceInformation};
+use oxc_semantic::{AstNode, AstNodes, IsGlobalReference, NodeId, ReferenceId, Semantic, SymbolId};
 use oxc_span::{GetSpan, Span};
 use oxc_syntax::operator::{AssignmentOperator, BinaryOperator, LogicalOperator, UnaryOperator};
 
@@ -204,7 +206,7 @@ pub fn get_enclosing_function<'a, 'b>(
         {
             return Some(current_node);
         }
-        current_node = semantic.nodes().parent_node(current_node.id())?;
+        current_node = semantic.nodes().parent_node(current_node.id());
     }
 }
 
@@ -222,11 +224,10 @@ pub fn outermost_paren<'a, 'b>(
     let mut node = node;
 
     loop {
-        if let Some(parent) = semantic.nodes().parent_node(node.id()) {
-            if let AstKind::ParenthesizedExpression(_) = parent.kind() {
-                node = parent;
-                continue;
-            }
+        let parent = semantic.nodes().parent_node(node.id());
+        if let AstKind::ParenthesizedExpression(_) = parent.kind() {
+            node = parent;
+            continue;
         }
 
         break;
@@ -242,7 +243,6 @@ pub fn outermost_paren_parent<'a, 'b>(
     semantic
         .nodes()
         .ancestors(node.id())
-        .skip(1)
         .find(|parent| !matches!(parent.kind(), AstKind::ParenthesizedExpression(_)))
 }
 
@@ -254,7 +254,6 @@ pub fn nth_outermost_paren_parent<'a, 'b>(
     semantic
         .nodes()
         .ancestors(node.id())
-        .skip(1)
         .filter(|parent| !matches!(parent.kind(), AstKind::ParenthesizedExpression(_)))
         .nth(n)
 }
@@ -262,10 +261,10 @@ pub fn nth_outermost_paren_parent<'a, 'b>(
 /// Iterate over parents of `node`, skipping nodes that are also ignored by
 /// [`Expression::get_inner_expression`].
 pub fn iter_outer_expressions<'a, 's>(
-    semantic: &'s Semantic<'a>,
+    nodes: &'s AstNodes<'a>,
     node_id: NodeId,
 ) -> impl Iterator<Item = AstKind<'a>> + 's {
-    semantic.nodes().ancestor_kinds(node_id).skip(1).filter(|parent| {
+    nodes.ancestor_kinds(node_id).filter(|parent| {
         !matches!(
             parent,
             AstKind::ParenthesizedExpression(_)
@@ -311,9 +310,7 @@ pub fn extract_regex_flags<'a>(
     }
     let flag_arg = match &args[1] {
         Argument::StringLiteral(flag_arg) => flag_arg.value,
-        Argument::TemplateLiteral(template) if template.is_no_substitution_template() => {
-            template.quasi().expect("no-substitution templates always have a quasi")
-        }
+        Argument::TemplateLiteral(template) => template.single_quasi()?,
         _ => return None,
     };
     let mut flags = RegExpFlags::empty();
@@ -399,7 +396,7 @@ pub fn is_new_expression<'a>(
 pub fn call_expr_method_callee_info<'a>(
     call_expr: &'a CallExpression<'a>,
 ) -> Option<(Span, &'a str)> {
-    let member_expr = call_expr.callee.without_parentheses().as_member_expression()?;
+    let member_expr = call_expr.callee.get_inner_expression().as_member_expression()?;
     member_expr.static_property_info()
 }
 
@@ -519,6 +516,14 @@ pub fn get_preceding_indent_str(source_text: &str, span: Span) -> Option<&str> {
 }
 
 pub fn could_be_error(ctx: &LintContext, expr: &Expression) -> bool {
+    could_be_error_impl(ctx, expr, &mut FxHashSet::default())
+}
+
+fn could_be_error_impl(
+    ctx: &LintContext,
+    expr: &Expression,
+    visited: &mut FxHashSet<SymbolId>,
+) -> bool {
     match expr.get_inner_expression() {
         Expression::NewExpression(_)
         | Expression::AwaitExpression(_)
@@ -532,42 +537,54 @@ pub fn could_be_error(ctx: &LintContext, expr: &Expression) -> bool {
         Expression::AssignmentExpression(expr) => {
             if matches!(expr.operator, AssignmentOperator::Assign | AssignmentOperator::LogicalAnd)
             {
-                return could_be_error(ctx, &expr.right);
+                return could_be_error_impl(ctx, &expr.right, visited);
             }
 
             if matches!(
                 expr.operator,
                 AssignmentOperator::LogicalOr | AssignmentOperator::LogicalNullish
             ) {
-                return expr.left.get_expression().is_none_or(|expr| could_be_error(ctx, expr))
-                    || could_be_error(ctx, &expr.right);
+                return expr
+                    .left
+                    .get_expression()
+                    .is_none_or(|expr| could_be_error_impl(ctx, expr, visited))
+                    || could_be_error_impl(ctx, &expr.right, visited);
             }
 
             false
         }
         Expression::SequenceExpression(expr) => {
-            expr.expressions.last().is_some_and(|expr| could_be_error(ctx, expr))
+            expr.expressions.last().is_some_and(|expr| could_be_error_impl(ctx, expr, visited))
         }
         Expression::LogicalExpression(expr) => {
             if matches!(expr.operator, LogicalOperator::And) {
-                return could_be_error(ctx, &expr.right);
+                return could_be_error_impl(ctx, &expr.right, visited);
             }
 
-            could_be_error(ctx, &expr.left) || could_be_error(ctx, &expr.right)
+            could_be_error_impl(ctx, &expr.left, visited)
+                || could_be_error_impl(ctx, &expr.right, visited)
         }
         Expression::ConditionalExpression(expr) => {
-            could_be_error(ctx, &expr.consequent) || could_be_error(ctx, &expr.alternate)
+            could_be_error_impl(ctx, &expr.consequent, visited)
+                || could_be_error_impl(ctx, &expr.alternate, visited)
         }
         Expression::Identifier(ident) => {
             let reference = ctx.scoping().get_reference(ident.reference_id());
             let Some(symbol_id) = reference.symbol_id() else {
                 return true;
             };
+
+            // Check if we've already visited this symbol to prevent infinite recursion
+            // Return true (could be error) when we encounter a circular reference since we can't determine the type
+            if !visited.insert(symbol_id) {
+                return true;
+            }
+
             let decl = ctx.nodes().get_node(ctx.scoping().symbol_declaration(symbol_id));
             match decl.kind() {
                 AstKind::VariableDeclarator(decl) => {
                     if let Some(init) = &decl.init {
-                        could_be_error(ctx, init)
+                        could_be_error_impl(ctx, init, visited)
                     } else {
                         // TODO: warn about throwing undefined
                         false
@@ -652,8 +669,9 @@ pub fn is_default_this_binding<'a>(
 
     let mut current_node = node;
     loop {
-        let parent = semantic.nodes().parent_node(current_node.id()).unwrap();
-        match parent.kind() {
+        let parent = semantic.nodes().parent_node(current_node.id());
+        let parent_kind = parent.kind();
+        match parent_kind {
             AstKind::ChainExpression(_)
             | AstKind::ConditionalExpression(_)
             | AstKind::LogicalExpression(_)
@@ -661,7 +679,7 @@ pub fn is_default_this_binding<'a>(
                 current_node = parent;
             }
             AstKind::ReturnStatement(_) => {
-                let upper_func = semantic.nodes().ancestors(parent.id()).skip(1).find(|node| {
+                let upper_func = semantic.nodes().ancestors(parent.id()).find(|node| {
                     matches!(
                         node.kind(),
                         AstKind::Function(_) | AstKind::ArrowFunctionExpression(_)
@@ -719,9 +737,12 @@ pub fn is_default_this_binding<'a>(
 
                 return !is_constructor;
             }
-            AstKind::MemberExpression(mem_expr) => {
-                if mem_expr.object().span() == current_node.span()
-                    && matches!(mem_expr.static_property_name(), Some("apply" | "bind" | "call"))
+            AstKind::StaticMemberExpression(_) | AstKind::ComputedMemberExpression(_) => {
+                let member_expr_kind = parent_kind.as_member_expression_kind().unwrap();
+                if member_expr_kind.object().span() == current_node.span()
+                    && member_expr_kind
+                        .static_property_name()
+                        .is_some_and(|name| name == "apply" || name == "bind" || name == "call")
                 {
                     let node = outermost_paren_parent(parent, semantic).unwrap();
                     if let AstKind::CallExpression(call_expr) = node.kind() {
@@ -787,7 +808,7 @@ pub fn get_static_property_name<'a>(parent_node: &AstNode<'a>) -> Option<Cow<'a,
 
     match key {
         PropertyKey::RegExpLiteral(regex) => Some(Cow::Owned(regex.regex.to_string())),
-        PropertyKey::BigIntLiteral(bigint) => Some(Cow::Borrowed(bigint.raw.as_str())),
+        PropertyKey::BigIntLiteral(bigint) => Some(Cow::Borrowed(bigint.value.as_str())),
         PropertyKey::TemplateLiteral(template) => {
             if template.expressions.is_empty() && template.quasis.len() == 1 {
                 if let Some(cooked) = &template.quasis[0].value.cooked {
@@ -860,32 +881,36 @@ pub fn get_function_name_with_kind<'a>(
         _ => tokens.push(Cow::Borrowed("function")),
     }
 
-    match parent_node.kind() {
+    let method_name = match parent_node.kind() {
         AstKind::MethodDefinition(method_definition)
             if !method_definition.computed && method_definition.key.is_private_identifier() =>
         {
-            if let Some(name) = method_definition.key.name() {
-                tokens.push(name);
-            }
+            method_definition.key.name()
         }
         AstKind::PropertyDefinition(definition) => {
             if !definition.computed && definition.key.is_private_identifier() {
-                if let Some(name) = definition.key.name() {
-                    tokens.push(name);
-                }
+                definition.key.name()
             } else if let Some(static_name) = get_static_property_name(parent_node) {
-                tokens.push(static_name);
+                Some(static_name)
             } else if let Some(name) = name {
-                tokens.push(Cow::Borrowed(name.as_str()));
+                Some(Cow::Borrowed(name.as_str()))
+            } else {
+                None
             }
         }
         _ => {
             if let Some(static_name) = get_static_property_name(parent_node) {
-                tokens.push(static_name);
+                Some(static_name)
             } else if let Some(name) = name {
-                tokens.push(Cow::Borrowed(name.as_str()));
+                Some(Cow::Borrowed(name.as_str()))
+            } else {
+                None
             }
         }
+    };
+
+    if let Some(method_name) = method_name {
+        tokens.push(Cow::Owned(format!("`{method_name}`")));
     }
 
     Cow::Owned(tokens.join(" "))

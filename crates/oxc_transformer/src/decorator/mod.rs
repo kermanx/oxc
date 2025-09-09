@@ -2,9 +2,12 @@ mod legacy;
 mod options;
 
 use oxc_ast::ast::*;
-use oxc_traverse::{Traverse, TraverseCtx};
+use oxc_traverse::Traverse;
 
-use crate::TransformCtx;
+use crate::{
+    context::{TransformCtx, TraverseCtx},
+    state::TransformState,
+};
 
 use legacy::LegacyDecorator;
 pub use options::DecoratorOptions;
@@ -25,7 +28,13 @@ impl<'a, 'ctx> Decorator<'a, 'ctx> {
     }
 }
 
-impl<'a> Traverse<'a> for Decorator<'a, '_> {
+impl<'a> Traverse<'a, TransformState<'a>> for Decorator<'a, '_> {
+    fn enter_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut TraverseCtx<'a>) {
+        if self.options.legacy {
+            self.legacy_decorator.enter_statement(stmt, ctx);
+        }
+    }
+
     fn exit_statement(&mut self, stmt: &mut Statement<'a>, ctx: &mut TraverseCtx<'a>) {
         if self.options.legacy {
             self.legacy_decorator.exit_statement(stmt, ctx);
@@ -76,6 +85,14 @@ impl<'a> Traverse<'a> for Decorator<'a, '_> {
     ) {
         if self.options.legacy {
             self.legacy_decorator.enter_property_definition(node, ctx);
+        }
+    }
+}
+
+impl<'a> Decorator<'a, '_> {
+    pub fn exit_class_at_end(&mut self, class: &mut Class<'a>, ctx: &mut TraverseCtx<'a>) {
+        if self.options.legacy {
+            self.legacy_decorator.exit_class_at_end(class, ctx);
         }
     }
 }

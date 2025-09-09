@@ -48,7 +48,7 @@ impl<'a> IsolatedDeclarations<'a> {
     ) -> Option<VariableDeclarator<'a>> {
         if decl.id.kind.is_destructuring_pattern() {
             decl.id.bound_names(&mut |id| {
-                if !check_binding || self.scope.has_reference(&id.name) {
+                if !check_binding || self.scope.has_value_reference(&id.name) {
                     self.error(binding_element_export(id.span));
                 }
             });
@@ -57,7 +57,7 @@ impl<'a> IsolatedDeclarations<'a> {
 
         if check_binding {
             if let Some(name) = decl.id.get_identifier_name() {
-                if !self.scope.has_reference(&name) {
+                if !self.scope.has_value_reference(&name) {
                     return None;
                 }
             }
@@ -127,6 +127,8 @@ impl<'a> IsolatedDeclarations<'a> {
             return decl.clone_in(self.ast.allocator);
         };
 
+        // Follows https://github.com/microsoft/TypeScript/pull/54134
+        let kind = TSModuleDeclarationKind::Namespace;
         match body {
             TSModuleDeclarationBody::TSModuleDeclaration(decl) => {
                 let inner = self.transform_ts_module_declaration(decl);
@@ -134,7 +136,7 @@ impl<'a> IsolatedDeclarations<'a> {
                     decl.span,
                     decl.id.clone_in(self.ast.allocator),
                     Some(TSModuleDeclarationBody::TSModuleDeclaration(inner)),
-                    decl.kind,
+                    kind,
                     self.is_declare(),
                 )
             }
@@ -144,7 +146,7 @@ impl<'a> IsolatedDeclarations<'a> {
                     decl.span,
                     decl.id.clone_in(self.ast.allocator),
                     Some(TSModuleDeclarationBody::TSModuleBlock(body)),
-                    decl.kind,
+                    kind,
                     self.is_declare(),
                 )
             }
@@ -159,7 +161,7 @@ impl<'a> IsolatedDeclarations<'a> {
         match decl {
             Declaration::FunctionDeclaration(func) => {
                 let needs_transform = !check_binding
-                    || func.id.as_ref().is_some_and(|id| self.scope.has_reference(&id.name));
+                    || func.id.as_ref().is_some_and(|id| self.scope.has_value_reference(&id.name));
                 needs_transform
                     .then(|| Declaration::FunctionDeclaration(self.transform_function(func, None)))
             }
@@ -202,7 +204,7 @@ impl<'a> IsolatedDeclarations<'a> {
                     || matches!(
                         &decl.id,
                         TSModuleDeclarationName::Identifier(ident)
-                            if self.scope.has_reference(&ident.name)
+                            if self.scope.has_value_reference(&ident.name)
                     )
                 {
                     Some(Declaration::TSModuleDeclaration(

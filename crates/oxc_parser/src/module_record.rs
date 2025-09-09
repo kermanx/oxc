@@ -1,4 +1,4 @@
-use oxc_allocator::Allocator;
+use oxc_allocator::{Allocator, Vec};
 use oxc_ast::ast::*;
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_ecmascript::BoundNames;
@@ -10,8 +10,8 @@ use crate::diagnostics;
 pub struct ModuleRecordBuilder<'a> {
     allocator: &'a Allocator,
     module_record: ModuleRecord<'a>,
-    export_entries: Vec<ExportEntry<'a>>,
-    exported_bindings_duplicated: Vec<NameSpan<'a>>,
+    export_entries: Vec<'a, ExportEntry<'a>>,
+    exported_bindings_duplicated: Vec<'a, NameSpan<'a>>,
 }
 
 impl<'a> ModuleRecordBuilder<'a> {
@@ -19,12 +19,12 @@ impl<'a> ModuleRecordBuilder<'a> {
         Self {
             allocator,
             module_record: ModuleRecord::new(allocator),
-            export_entries: vec![],
-            exported_bindings_duplicated: vec![],
+            export_entries: Vec::new_in(allocator),
+            exported_bindings_duplicated: Vec::new_in(allocator),
         }
     }
 
-    pub fn build(mut self) -> (ModuleRecord<'a>, Vec<OxcDiagnostic>) {
+    pub fn build(mut self) -> (ModuleRecord<'a>, std::vec::Vec<OxcDiagnostic>) {
         // The `ParseModule` algorithm requires `importedBoundNames` (import entries) to be
         // resolved before resolving export entries.
         self.resolve_export_entries();
@@ -32,7 +32,7 @@ impl<'a> ModuleRecordBuilder<'a> {
         (self.module_record, errors)
     }
 
-    pub fn errors(&self) -> Vec<OxcDiagnostic> {
+    pub fn errors(&self) -> std::vec::Vec<OxcDiagnostic> {
         let mut errors = vec![];
 
         let module_record = &self.module_record;
@@ -56,7 +56,7 @@ impl<'a> ModuleRecordBuilder<'a> {
                     .iter()
                     .filter_map(|export_entry| export_entry.export_name.default_export_span()),
             )
-            .collect::<Vec<_>>();
+            .collect::<std::vec::Vec<_>>();
         if default_exports.len() > 1 {
             errors.push(
                 OxcDiagnostic::error("Duplicated default export").with_labels(default_exports),
@@ -102,7 +102,9 @@ impl<'a> ModuleRecordBuilder<'a> {
     /// [ParseModule](https://tc39.es/ecma262/#sec-parsemodule)
     /// Step 10.
     fn resolve_export_entries(&mut self) {
-        let export_entries = self.export_entries.drain(..).collect::<Vec<_>>();
+        // let export_entries = self.export_entries.drain(..).collect::<Vec<_>>();
+        let export_entries =
+            std::mem::replace(&mut self.export_entries, Vec::new_in(self.allocator));
         // 10. For each ExportEntry Record ee of exportEntries, do
         for ee in export_entries {
             // a. If ee.[[ModuleRequest]] is null, then
@@ -185,27 +187,7 @@ impl<'a> ModuleRecordBuilder<'a> {
         self.module_record.import_metas.push(span);
     }
 
-    pub fn visit_module_declaration(&mut self, module_decl: &ModuleDeclaration<'a>) {
-        self.module_record.has_module_syntax = true;
-        match module_decl {
-            ModuleDeclaration::ImportDeclaration(import_decl) => {
-                self.visit_import_declaration(import_decl);
-            }
-            ModuleDeclaration::ExportAllDeclaration(export_all_decl) => {
-                self.visit_export_all_declaration(export_all_decl);
-            }
-            ModuleDeclaration::ExportDefaultDeclaration(export_default_decl) => {
-                self.visit_export_default_declaration(export_default_decl);
-            }
-            ModuleDeclaration::ExportNamedDeclaration(export_named_decl) => {
-                self.visit_export_named_declaration(export_named_decl);
-            }
-            ModuleDeclaration::TSExportAssignment(_)
-            | ModuleDeclaration::TSNamespaceExportDeclaration(_) => { /* noop */ }
-        }
-    }
-
-    fn visit_import_declaration(&mut self, decl: &ImportDeclaration<'a>) {
+    pub fn visit_import_declaration(&mut self, decl: &ImportDeclaration<'a>) {
         let module_request = NameSpan::new(decl.source.value, decl.source.span);
 
         if let Some(specifiers) = &decl.specifiers {
@@ -248,9 +230,10 @@ impl<'a> ModuleRecordBuilder<'a> {
                 is_import: true,
             },
         );
+        self.module_record.has_module_syntax = true;
     }
 
-    fn visit_export_all_declaration(&mut self, decl: &ExportAllDeclaration<'a>) {
+    pub fn visit_export_all_declaration(&mut self, decl: &ExportAllDeclaration<'a>) {
         let module_request = NameSpan::new(decl.source.value, decl.source.span);
         let export_entry = ExportEntry {
             statement_span: decl.span,
@@ -279,11 +262,14 @@ impl<'a> ModuleRecordBuilder<'a> {
                 is_import: false,
             },
         );
+        self.module_record.has_module_syntax = true;
     }
 
-    fn visit_export_default_declaration(&mut self, decl: &ExportDefaultDeclaration<'a>) {
-        let exported_name = &decl.exported;
-
+    pub fn visit_export_default_declaration(
+        &mut self,
+        decl: &ExportDefaultDeclaration<'a>,
+        default_keyword_span: Span,
+    ) {
         let local_name = match &decl.declaration {
             ExportDefaultDeclarationKind::Identifier(ident) => {
                 ExportLocalName::Default(NameSpan::new(ident.name, ident.span))
@@ -308,14 +294,15 @@ impl<'a> ModuleRecordBuilder<'a> {
             span: decl.declaration.span(),
             module_request: None,
             import_name: ExportImportName::default(),
-            export_name: ExportExportName::Default(exported_name.span()),
+            export_name: ExportExportName::Default(default_keyword_span),
             local_name,
             is_type: decl.is_typescript_syntax(),
         };
         self.add_export_entry(export_entry);
+        self.module_record.has_module_syntax = true;
     }
 
-    fn visit_export_named_declaration(&mut self, decl: &ExportNamedDeclaration<'a>) {
+    pub fn visit_export_named_declaration(&mut self, decl: &ExportNamedDeclaration<'a>) {
         let module_request =
             decl.source.as_ref().map(|source| NameSpan::new(source.value, source.span));
 
@@ -379,6 +366,12 @@ impl<'a> ModuleRecordBuilder<'a> {
             self.add_export_entry(export_entry);
             self.add_export_binding(specifier.exported.name(), specifier.exported.span());
         }
+
+        self.module_record.has_module_syntax = true;
+    }
+
+    pub fn found_ts_export(&mut self) {
+        self.module_record.has_module_syntax = true;
     }
 }
 

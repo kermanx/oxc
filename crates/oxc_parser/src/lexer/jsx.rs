@@ -90,7 +90,7 @@ impl Lexer<'_> {
                     cold_branch(|| {
                         let start = self.offset();
                         self.error(diagnostics::unexpected_jsx_end(
-                            Span::new(start, start),
+                            Span::empty(start),
                             next_byte as char,
                             if next_byte == b'}' { "rbrace" } else { "gt" },
                         ));
@@ -115,9 +115,6 @@ impl Lexer<'_> {
             return None;
         }
         self.consume_char();
-
-        // Clear the current lookahead `Minus` Token
-        self.lookahead.clear();
 
         // Consume bytes which are part of identifier tail
         let next_byte = byte_search! {

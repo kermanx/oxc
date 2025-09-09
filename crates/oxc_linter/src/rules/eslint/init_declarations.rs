@@ -1,8 +1,8 @@
 use oxc_ast::{
     AstKind,
     ast::{
-        BindingPatternKind, ForInStatement, ForOfStatement, ForStatementLeft,
-        VariableDeclarationKind,
+        BindingPatternKind, ForInStatement, ForOfStatement, ForStatement, ForStatementInit,
+        ForStatementLeft, VariableDeclarationKind,
     },
 };
 use oxc_diagnostics::OxcDiagnostic;
@@ -128,16 +128,14 @@ impl Rule for InitDeclarations {
 
     fn run<'a>(&self, node: &AstNode<'a>, ctx: &LintContext<'a>) {
         if let AstKind::VariableDeclaration(decl) = node.kind() {
-            let Some(parent) = ctx.nodes().parent_node(node.id()) else {
-                return;
-            };
+            let parent = ctx.nodes().parent_node(node.id());
             // support for TypeScript's declare variables
             if self.mode == Mode::Always {
                 if decl.declare {
                     return;
                 }
                 let decl_ancestor =
-                    ctx.nodes().ancestor_kinds(node.id()).skip(1).find(|el| {
+                    ctx.nodes().ancestor_kinds(node.id()).find(|el| {
                         matches!(el, AstKind::TSModuleDeclaration(ts_module_decl) if ts_module_decl.declare)
                     });
                 if decl_ancestor.is_some() {
@@ -156,7 +154,9 @@ impl Rule for InitDeclarations {
                     // When eslint processes ForStatementInit statements
                     // the default variable is initialized
                     // eg: "for (var a; a < 2; a++)" a is initialized
-                    AstKind::ForStatementInit(_) => true,
+                    AstKind::ForStatement(ForStatement { init, .. }) => {
+                        matches!(init, Some(ForStatementInit::VariableDeclaration(init)) if init.span == decl.span)
+                    }
                     _ => v.init.is_some(),
                 };
 

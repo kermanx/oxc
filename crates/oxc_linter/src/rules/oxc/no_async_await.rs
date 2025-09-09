@@ -19,6 +19,13 @@ declare_oxc_lint!(
     ///
     /// Disallows the use of async/await.
     ///
+    /// ### Why is this bad?
+    ///
+    /// This rule is useful for environments that don't support async/await syntax
+    /// or when you want to enforce the use of promises or other asynchronous
+    /// patterns instead. It can also be used to maintain consistency in codebases
+    /// that use alternative async patterns.
+    ///
     /// ### Examples
     ///
     /// Examples of **incorrect** code for this rule:
@@ -50,7 +57,7 @@ impl Rule for NoAsyncAwait {
                             //     async bar() {}
                             // }
                             // ```
-                            Some(AstKind::MethodDefinition(method_def)) => {
+                            AstKind::MethodDefinition(method_def) => {
                                 Span::new(method_def.span.start, method_def.key.span().start)
                             }
                             // The function is part of an object property like:
@@ -59,7 +66,7 @@ impl Rule for NoAsyncAwait {
                             //     async foo() {}
                             // };
                             // ```
-                            Some(AstKind::ObjectProperty(obj_prop)) => {
+                            AstKind::ObjectProperty(obj_prop) => {
                                 Span::new(obj_prop.span.start, obj_prop.key.span().start)
                             }
                             _ => func_decl.span,

@@ -101,9 +101,10 @@ use oxc_syntax::{
     scope::{ScopeFlags, ScopeId},
     symbol::SymbolFlags,
 };
-use oxc_traverse::{Ancestor, BoundIdentifier, Traverse, TraverseCtx};
+use oxc_traverse::{Ancestor, BoundIdentifier, Traverse};
 
 use crate::{EnvOptions, utils::ast_builder::wrap_expression_in_arrow_function_iife};
+use crate::{context::TraverseCtx, state::TransformState};
 
 type FxIndexMap<K, V> = IndexMap<K, V, FxBuildHasher>;
 
@@ -172,7 +173,7 @@ impl ArrowFunctionConverter<'_> {
     }
 }
 
-impl<'a> Traverse<'a> for ArrowFunctionConverter<'a> {
+impl<'a> Traverse<'a, TransformState<'a>> for ArrowFunctionConverter<'a> {
     // Note: No visitors for `TSModuleBlock` because `this` is not legal in TS module blocks.
     // <https://www.typescriptlang.org/play/?#code/HYQwtgpgzgDiDGEAEAxA9mpBvAsAKCSXjWCgBckANJAXiQAoBKWgPiTIAsBLKAbnwC++fGDQATAK4AbZACEQAJ2z5CxUhWp0mrdtz6D8QA>
 
@@ -648,7 +649,7 @@ impl<'a> ArrowFunctionConverter<'a> {
             body.statements.push(return_statement);
         }
 
-        ctx.ast.expression_function_with_scope_id_and_pure(
+        ctx.ast.expression_function_with_scope_id_and_pure_and_pife(
             arrow_function_expr.span,
             FunctionType::FunctionExpression,
             None,
@@ -661,6 +662,7 @@ impl<'a> ArrowFunctionConverter<'a> {
             arrow_function_expr.return_type,
             Some(body),
             scope_id,
+            false,
             false,
         )
     }
@@ -953,8 +955,8 @@ impl<'a> ArrowFunctionConverter<'a> {
         );
         let statements = ctx.ast.vec1(ctx.ast.statement_expression(SPAN, init));
         let body = ctx.ast.function_body(SPAN, ctx.ast.vec(), statements);
-        let init = ctx.ast.expression_arrow_function_with_scope_id_and_pure(
-            SPAN, true, false, NONE, params, NONE, body, scope_id, false,
+        let init = ctx.ast.expression_arrow_function_with_scope_id_and_pure_and_pife(
+            SPAN, true, false, NONE, params, NONE, body, scope_id, false, false,
         );
         ctx.ast.variable_declarator(
             SPAN,

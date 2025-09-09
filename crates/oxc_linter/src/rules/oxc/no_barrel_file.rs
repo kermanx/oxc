@@ -1,5 +1,6 @@
 use oxc_diagnostics::{LabeledSpan, OxcDiagnostic};
 use oxc_macros::declare_oxc_lint;
+use oxc_span::Span;
 
 use crate::{
     ModuleRecord,
@@ -33,6 +34,14 @@ declare_oxc_lint!(
     /// and the total number of modules exceed a threshold.
     ///
     /// The default threshold is 100;
+    ///
+    /// ### Why is this bad?
+    ///
+    /// Barrel files that re-export many modules can significantly slow down
+    /// applications and bundlers. When a barrel file exports a large number of
+    /// modules, importing from it forces the runtime or bundler to process all
+    /// the exported modules, even if only a few are actually used. This leads
+    /// to slower startup times and larger bundle sizes.
     ///
     /// References:
     ///
@@ -96,18 +105,25 @@ impl Rule for NoBarrelFile {
         let mut total: usize = 0;
 
         for module_request in module_requests {
+            // the own module is counted as well
+            total += 1;
+
             if let Some(remote_module) =
                 module_record.loaded_modules.read().unwrap().get(module_request.name())
             {
                 if let Some(count) = count_loaded_modules(remote_module) {
                     total += count;
-                    labels.push(module_request.span().label(format!("{count} modules")));
+                    labels.push(module_request.span.label(format!("{count} modules")));
                 }
             }
         }
 
         let threshold = self.threshold;
         if total >= threshold {
+            if labels.is_empty() {
+                labels.push(Span::new(0, 0).label("File defined here."));
+            }
+
             ctx.diagnostic(no_barrel_file(total, threshold, labels));
         }
     }

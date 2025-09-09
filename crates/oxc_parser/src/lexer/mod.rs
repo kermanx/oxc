@@ -5,8 +5,6 @@
 //!     * [rustc](https://github.com/rust-lang/rust/blob/1.82.0/compiler/rustc_lexer/src)
 //!     * [v8](https://v8.dev/blog/scanner)
 
-use std::collections::VecDeque;
-
 use rustc_hash::FxHashMap;
 
 use oxc_allocator::Allocator;
@@ -42,14 +40,11 @@ pub use token::Token;
 use source::{Source, SourcePosition};
 use trivia_builder::TriviaBuilder;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct LexerCheckpoint<'a> {
-    /// Current position in source
-    position: SourcePosition<'a>,
-
+    source_position: SourcePosition<'a>,
     token: Token,
-
-    errors_pos: usize,
+    errors: Option<Vec<OxcDiagnostic>>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -57,12 +52,6 @@ pub enum LexerContext {
     Regular,
     /// Lex the next token, returns `JsxString` or any other token
     JsxAttributeValue,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Lookahead<'a> {
-    position: SourcePosition<'a>,
-    token: Token,
 }
 
 pub struct Lexer<'a> {
@@ -76,8 +65,6 @@ pub struct Lexer<'a> {
     token: Token,
 
     pub(crate) errors: Vec<OxcDiagnostic>,
-
-    lookahead: VecDeque<Lookahead<'a>>,
 
     context: LexerContext,
 
@@ -115,7 +102,6 @@ impl<'a> Lexer<'a> {
             source_type,
             token,
             errors: vec![],
-            lookahead: VecDeque::with_capacity(4), // 4 is the maximum lookahead for TypeScript
             context: LexerContext::Regular,
             trivia_builder: TriviaBuilder::default(),
             escaped_strings: FxHashMap::default(),
@@ -152,51 +138,24 @@ impl<'a> Lexer<'a> {
     /// Use `rewind` to restore the lexer to the state stored in the checkpoint.
     pub fn checkpoint(&self) -> LexerCheckpoint<'a> {
         LexerCheckpoint {
-            position: self.source.position(),
+            source_position: self.source.position(),
             token: self.token,
-            errors_pos: self.errors.len(),
+            errors: { if self.errors.is_empty() { None } else { Some(self.errors.clone()) } },
         }
     }
 
     /// Rewinds the lexer to the same state as when the passed in `checkpoint` was created.
     pub fn rewind(&mut self, checkpoint: LexerCheckpoint<'a>) {
-        self.errors.truncate(checkpoint.errors_pos);
-        self.source.set_position(checkpoint.position);
+        self.errors = checkpoint.errors.unwrap_or_default();
+        self.source.set_position(checkpoint.source_position);
         self.token = checkpoint.token;
-        self.lookahead.clear();
     }
 
-    /// Find the nth lookahead token lazily
-    pub fn lookahead(&mut self, n: u8) -> Token {
-        let n = n as usize;
-        debug_assert!(n > 0);
-
-        if let Some(lookahead) = self.lookahead.get(n - 1) {
-            return lookahead.token;
-        }
-
-        let position = self.source.position();
-
-        if let Some(lookahead) = self.lookahead.back() {
-            self.source.set_position(lookahead.position);
-        }
-
-        for _i in self.lookahead.len()..n {
-            let kind = self.read_next_token();
-            let peeked = self.finish_next(kind);
-            self.lookahead.push_back(Lookahead { position: self.source.position(), token: peeked });
-        }
-
-        // Call to `finish_next` in loop above leaves `self.token = Token::default()`.
-        // Only circumstance in which `self.token` wouldn't have been default at start of this
-        // function is if we were at very start of file, before any tokens have been read, when
-        // `token.is_on_new_line` is `true`. But `lookahead` isn't called before the first token is
-        // read, so that's not possible. So no need to restore `self.token` here.
-        // It's already in same state as it was at start of this function.
-
-        self.source.set_position(position);
-
-        self.lookahead[n - 1].token
+    pub fn peek_token(&mut self) -> Token {
+        let checkpoint = self.checkpoint();
+        let token = self.next_token();
+        self.rewind(checkpoint);
+        token
     }
 
     /// Set context
@@ -204,12 +163,22 @@ impl<'a> Lexer<'a> {
         self.context = context;
     }
 
-    /// Main entry point
+    /// Read first token in file.
+    pub fn first_token(&mut self) -> Token {
+        // HashbangComment ::
+        //     `#!` SingleLineCommentChars?
+        let kind = if let Some([b'#', b'!']) = self.peek_2_bytes() {
+            // SAFETY: Next 2 bytes are `#!`
+            unsafe { self.read_hashbang_comment() }
+        } else {
+            self.read_next_token()
+        };
+        self.finish_next(kind)
+    }
+
+    /// Read next token in file.
+    /// Use `first_token` for first token, and this method for all further tokens.
     pub fn next_token(&mut self) -> Token {
-        if let Some(lookahead) = self.lookahead.pop_front() {
-            self.source.set_position(lookahead.position);
-            return lookahead.token;
-        }
         let kind = self.read_next_token();
         self.finish_next(kind)
     }
@@ -301,8 +270,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn current_offset(&self) -> Span {
-        let offset = self.offset();
-        Span::new(offset, offset)
+        Span::empty(self.offset())
     }
 
     /// Return `IllegalCharacter` Error or `UnexpectedEnd` if EOF
@@ -316,6 +284,7 @@ impl<'a> Lexer<'a> {
 
     /// Read each char and set the current token
     /// Whitespace and line terminators are skipped
+    #[inline] // Make sure is inlined into `next_token`
     fn read_next_token(&mut self) -> Kind {
         self.trivia_builder.has_pure_comment = false;
         self.trivia_builder.has_no_side_effects_comment = false;

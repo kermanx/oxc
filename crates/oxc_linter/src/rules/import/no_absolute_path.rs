@@ -1,3 +1,7 @@
+use std::path::Path;
+
+use serde_json::Value;
+
 use oxc_ast::{
     AstKind,
     ast::{Argument, Expression},
@@ -5,8 +9,6 @@ use oxc_ast::{
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::{GetSpan, Span};
-use serde_json::Value;
-use std::path::Path;
 
 use crate::{AstNode, context::LintContext, rule::Rule};
 
@@ -15,11 +17,17 @@ fn no_absolute_path_diagnostic(span: Span) -> OxcDiagnostic {
 }
 
 /// <https://github.com/import-js/eslint-plugin-import/blob/v2.31.0/docs/rules/no-absolute-path.md>
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct NoAbsolutePath {
     esmodule: bool,
     commonjs: bool,
     amd: bool,
+}
+
+impl Default for NoAbsolutePath {
+    fn default() -> Self {
+        Self { esmodule: true, commonjs: true, amd: false }
+    }
 }
 
 declare_oxc_lint!(
